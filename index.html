@@ -781,6 +781,7 @@ let visitorSelectedGroupId = null;
 
 let ctxGroupId = null;
 let ctxGroupName = '';
+let ctxGroupDocLink = '';
 let ctxJudgeNames = { 1:'', 2:'', 3:'' };
 let ctxJudgePins = { 1:'', 2:'', 3:'' };
 let ctxJudgeSignatures = { 1:null, 2:null, 3:null };
@@ -1188,6 +1189,16 @@ async function loadSheetsUrlFor(groupId){
 async function saveSheetsUrlFor(groupId, url){
   await storage.set(`sheetsUrl:${groupId}`, url, true);
 }
+/* ---------- Single shared document link for all works in a group ---------- */
+async function loadGroupDocLinkFor(groupId){
+  try{
+    const r = await storage.get(`groupDocLink:${groupId}`, true);
+    return r ? r.value : '';
+  }catch(e){ return ''; }
+}
+async function saveGroupDocLinkFor(groupId, url){
+  await storage.set(`groupDocLink:${groupId}`, url, true);
+}
 async function pushRowsToSheets(groupId, sheetName, headers, dataRows){
   const url = await loadSheetsUrlFor(groupId);
   if(!url) return { skipped:true };
@@ -1344,6 +1355,7 @@ async function enterGroup(groupId, groupName){
   ctxJudgeSignatures = await loadJudgeSignaturesFor(groupId);
   ctxCertifyApproved = await loadCertifyApprovedFor(groupId);
   ctxWorks = await loadWorksFor(groupId);
+  ctxGroupDocLink = await loadGroupDocLinkFor(groupId);
   scoreWorkId = null;
   scoreLevels = {};
   openDetailWorkId = null;
@@ -1555,6 +1567,7 @@ async function renderApp(){
     if(!judgeSection){
       app.innerHTML = `
         <div class="judge-info-strip">${escapeHtml(judgeLabel(ej))}</div>
+        ${ctxGroupDocLink ? `<div class="doclink-strip"><span>📄 เล่มผลงานวิจัยทั้งหมด:</span> <a href="${escapeHtml(ctxGroupDocLink)}" target="_blank" rel="noopener">เปิดลิงก์ ↗</a></div>` : ''}
         <div id="tabBody"></div>
       `;
       renderJudgeHomeMenu();
@@ -1562,6 +1575,7 @@ async function renderApp(){
       app.innerHTML = `
         <a href="#" class="back-link" id="backToJudgeHome">← กลับ</a>
         <div class="judge-info-strip">${escapeHtml(judgeLabel(ej))}</div>
+        ${ctxGroupDocLink ? `<div class="doclink-strip"><span>📄 เล่มผลงานวิจัยทั้งหมด:</span> <a href="${escapeHtml(ctxGroupDocLink)}" target="_blank" rel="noopener">เปิดลิงก์ ↗</a></div>` : ''}
         <div id="tabBody"></div>
       `;
       document.getElementById('backToJudgeHome').onclick = (e)=>{ e.preventDefault(); confirmLeaveIfDirty(()=>{ judgeSection = null; renderApp(); }); };
@@ -2259,7 +2273,7 @@ async function renderHomeSystemTab(){
               const existing = groups.find(x=>x.id===g.id);
               if(existing) existing.name = g.name;
             }
-            const worksForSave = (g.works||[]).map(w=>({ id:w.id, title:w.title, researchName:w.researchName, presenter:w.presenter, docLink:w.docLink }));
+            const worksForSave = (g.works||[]).map(w=>({ id:w.id, title:w.title, researchName:w.researchName, presenter:w.presenter }));
             await saveWorksFor(g.id, worksForSave);
             for(const w of (g.works||[])){
               if(!w.scores) continue;
@@ -2470,6 +2484,16 @@ async function renderWorksTab(){
       <div class="toast" id="csvToast"></div>
     </div>
     <div class="card">
+      <h2>ลิงก์เล่มผลงานวิจัย (ใช้ร่วมกันทุกเล่ม)</h2>
+      <p style="font-size:12.5px;color:var(--muted);margin:-6px 0 14px;">ใส่ลิงก์เดียว (เช่น โฟลเดอร์ Google Drive ที่รวมไฟล์เล่มผลงานวิจัยทุกเรื่องของกลุ่มนี้) กรรมการทุกท่านจะเห็นลิงก์นี้แถบเดียวกันตลอดการใช้งาน ไม่ต้องแนบแยกทีละผลงาน</p>
+      <label class="field-label">ลิงก์เล่มผลงานวิจัย</label>
+      <input type="text" id="groupDocLinkInput" placeholder="เช่น https://drive.google.com/drive/folders/xxxxx" value="${escapeHtml(ctxGroupDocLink)}">
+      <div style="margin-top:12px;">
+        <button class="btn btn-gold" id="saveGroupDocLinkBtn">บันทึกลิงก์</button>
+      </div>
+      <div class="toast" id="groupDocLinkToast"></div>
+    </div>
+    <div class="card">
       <h2>เพิ่มผลงานวิจัย</h2>
       <div class="row">
         <div>
@@ -2483,10 +2507,6 @@ async function renderWorksTab(){
         <div>
           <label class="field-label">ชื่อผู้วิจัย / ทีม</label>
           <input type="text" id="newPresenter" placeholder="ชื่อผู้วิจัย หรือ ทีม">
-        </div>
-        <div>
-          <label class="field-label">ลิงก์ผลงานวิจัย</label>
-          <input type="text" id="newDocLink" placeholder="เช่น https://drive.google.com/...">
         </div>
       </div>
       <div style="margin-top:14px;">
@@ -2595,6 +2615,27 @@ async function renderWorksTab(){
     btn.textContent = original;
     btn.disabled = false;
   };
+  document.getElementById('saveGroupDocLinkBtn').onclick = async ()=>{
+    const btn = document.getElementById('saveGroupDocLinkBtn');
+    const original = btn.textContent;
+    const url = document.getElementById('groupDocLinkInput').value.trim();
+    const toast = document.getElementById('groupDocLinkToast');
+    try{
+      await saveGroupDocLinkFor(ctxGroupId, url);
+      ctxGroupDocLink = url;
+      logAudit(ctxGroupId, 'edit_work', `แก้ไขลิงก์เล่มผลงานวิจัยของกลุ่ม`).catch(()=>{});
+      btn.textContent = 'บันทึกแล้ว ✓';
+      btn.style.background = 'var(--green)';
+      btn.style.color = '#fff';
+    }catch(err){
+      toast.style.color = 'var(--red)';
+      toast.textContent = 'บันทึกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง';
+      btn.textContent = 'บันทึกไม่สำเร็จ';
+      btn.style.background = 'var(--red)';
+      btn.style.color = '#fff';
+    }
+    setTimeout(()=>{ btn.textContent = original; btn.style.background=''; btn.style.color=''; }, 1500);
+  };
   document.getElementById('saveSheetsUrlBtn').onclick = async ()=>{
     const btn = document.getElementById('saveSheetsUrlBtn');
     const original = btn.textContent;
@@ -2640,7 +2681,6 @@ async function renderWorksTab(){
     const title = document.getElementById('newTitle').value.trim();
     const researchName = document.getElementById('newResearchName').value.trim();
     const presenter = document.getElementById('newPresenter').value.trim();
-    const docLink = document.getElementById('newDocLink').value.trim();
     if(!title){ document.getElementById('newTitle').focus(); return; }
     const btn = document.getElementById('addWorkBtn');
     const original = btn.textContent;
@@ -2650,7 +2690,7 @@ async function renderWorksTab(){
       setTimeout(()=>{ btn.textContent = original; btn.style.background = ''; }, 2200);
       return;
     }
-    const newWork = { id: uid(), title, researchName, presenter, docLink };
+    const newWork = { id: uid(), title, researchName, presenter };
     ctxWorks.push(newWork);
     try{
       await saveWorksFor(ctxGroupId, ctxWorks);
@@ -2658,7 +2698,6 @@ async function renderWorksTab(){
       document.getElementById('newTitle').value = '';
       document.getElementById('newResearchName').value = '';
       document.getElementById('newPresenter').value = '';
-      document.getElementById('newDocLink').value = '';
       btn.textContent = 'เพิ่มแล้ว ✓';
       btn.style.background = 'var(--green)';
       const countEl = document.getElementById('worksCount');
@@ -2863,7 +2902,7 @@ async function renderWorksList(){
     wrap.innerHTML = `<div class="empty">ยังไม่มีผลงานวิจัยในกลุ่มนี้ เพิ่มผลงานเรื่องแรกด้านบน</div>`;
     return;
   }
-  wrap.innerHTML = `<div style="overflow-x:auto;"><table style="min-width:920px;"><thead><tr><th>รหัสผลงานวิจัย</th><th>ชื่อผลงานวิจัย</th><th>ชื่อผู้วิจัย</th><th>ลิงก์ผลงานวิจัย</th><th>สถานะการให้คะแนน</th><th></th></tr></thead><tbody id="worksTbody"></tbody></table></div>`;
+  wrap.innerHTML = `<div style="overflow-x:auto;"><table style="min-width:820px;"><thead><tr><th>รหัสผลงานวิจัย</th><th>ชื่อผลงานวิจัย</th><th>ชื่อผู้วิจัย</th><th>สถานะการให้คะแนน</th><th></th></tr></thead><tbody id="worksTbody"></tbody></table></div>`;
   const tbody = document.getElementById('worksTbody');
   for(const w of ctxWorks){
     const scores = await loadAllScoresFor(w.id);
@@ -2881,7 +2920,6 @@ async function renderWorksList(){
       <td data-title-cell="${w.id}"><strong>${escapeHtml(w.title)}</strong><br><a href="#" data-editwork="${w.id}" style="font-size:12px;color:var(--orange);">✎ แก้ไข</a></td>
       <td data-researchname-cell="${w.id}">${escapeHtml(w.researchName||'-')}</td>
       <td data-presenter-cell="${w.id}" style="color:var(--muted)">${escapeHtml(w.presenter||'-')}</td>
-      <td data-doclink-cell="${w.id}">${w.docLink ? `<a href="${escapeHtml(w.docLink)}" target="_blank" rel="noopener">เปิดลิงก์ ↗</a>` : '<span style="color:var(--muted)">-</span>'}</td>
       <td>${statusHtml}</td>
       <td style="white-space:nowrap;" data-actions-cell="${w.id}">
         <button class="btn btn-outline" data-reset="${w.id}" style="margin-right:6px;">รีเซ็ตคะแนน</button>
@@ -2894,12 +2932,10 @@ async function renderWorksList(){
       const titleCell = tr.querySelector(`td[data-title-cell="${w.id}"]`);
       const researchNameCell = tr.querySelector(`td[data-researchname-cell="${w.id}"]`);
       const presenterCell = tr.querySelector(`td[data-presenter-cell="${w.id}"]`);
-      const docLinkCell = tr.querySelector(`td[data-doclink-cell="${w.id}"]`);
       const actionsCell = tr.querySelector(`td[data-actions-cell="${w.id}"]`);
       titleCell.innerHTML = `<input type="text" data-edit-title="${w.id}" value="${escapeHtml(w.title)}" style="width:100%;min-width:120px;">`;
       researchNameCell.innerHTML = `<input type="text" data-edit-researchname="${w.id}" value="${escapeHtml(w.researchName||'')}" style="width:100%;min-width:160px;">`;
       presenterCell.innerHTML = `<input type="text" data-edit-presenter="${w.id}" value="${escapeHtml(w.presenter||'')}" style="width:100%;min-width:120px;">`;
-      docLinkCell.innerHTML = `<input type="text" data-edit-doclink="${w.id}" value="${escapeHtml(w.docLink||'')}" style="width:100%;min-width:160px;" placeholder="https://...">`;
       actionsCell.innerHTML = `
         <button class="btn btn-gold" data-savework="${w.id}" style="margin-right:6px;">บันทึกการแก้ไข</button>
         <button class="btn btn-outline" data-cancelwork="${w.id}">ยกเลิก</button>
@@ -2913,7 +2949,6 @@ async function renderWorksList(){
         const newTitle = titleCell.querySelector('input').value.trim();
         const newResearchName = researchNameCell.querySelector('input').value.trim();
         const newPresenter = presenterCell.querySelector('input').value.trim();
-        const newDocLink = docLinkCell.querySelector('input').value.trim();
         const toast = document.getElementById(`editWorkToast${w.id}`);
         if(!newTitle){
           toast.style.color = 'var(--red)';
@@ -2927,11 +2962,10 @@ async function renderWorksList(){
           return;
         }
         const target = ctxWorks.find(x=>x.id===w.id);
-        const prevTitle = target.title, prevResearchName = target.researchName, prevPresenter = target.presenter, prevDocLink = target.docLink;
+        const prevTitle = target.title, prevResearchName = target.researchName, prevPresenter = target.presenter;
         target.title = newTitle;
         target.researchName = newResearchName;
         target.presenter = newPresenter;
-        target.docLink = newDocLink;
         try{
           await saveWorksFor(ctxGroupId, ctxWorks);
           logAudit(ctxGroupId, 'edit_work', `แก้ไขผลงาน "${prevTitle}" → "${newTitle}"${prevPresenter!==newPresenter ? ` (ผู้วิจัย: "${prevPresenter||'-'}" → "${newPresenter||'-'}")` : ''}`).catch(()=>{});
@@ -2940,7 +2974,6 @@ async function renderWorksList(){
           target.title = prevTitle;
           target.researchName = prevResearchName;
           target.presenter = prevPresenter;
-          target.docLink = prevDocLink;
           toast.style.color = 'var(--red)';
           toast.textContent = 'บันทึกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง';
         }
@@ -3132,7 +3165,6 @@ function renderJudgeScoreForm(){
   const work = ctxWorks.find(w=>w.id===scoreWorkId);
   body.innerHTML = `
     <a href="#" class="back-link" id="backToWorksList">← กลับไปยังรายการผลงาน</a>
-    ${work && work.docLink ? `<div class="doclink-strip"><span>📄 เล่มผลงานวิจัย:</span> <a href="${escapeHtml(work.docLink)}" target="_blank" rel="noopener">เปิดลิงก์เล่มผลงานวิจัย ↗</a></div>` : ''}
     <div class="card">
       <h2>ให้คะแนน: ${escapeHtml(work ? work.title : '')}</h2>
       <p style="font-size:12.5px;color:var(--muted);margin:-6px 0 0;">ผู้วิจัย: ${escapeHtml((work && work.presenter) || '-')}</p>

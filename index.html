@@ -3242,7 +3242,7 @@ function renderJudgeWorksList(){
       <td><strong>${escapeHtml(w.title)}</strong></td>
       <td>${escapeHtml(w.researchName||'-')}</td>
       <td>${escapeHtml(w.presenter||'-')}</td>
-      <td style="white-space:nowrap;"><button class="btn btn-primary" data-score="${w.id}">ให้คะแนน</button> <button class="btn btn-outline" data-notes="${w.id}" style="margin-left:6px;">จุดเด่น/จุดที่ควรพัฒนา</button></td>
+      <td style="white-space:nowrap;"><button class="btn btn-primary" data-score="${w.id}">ให้คะแนน</button> <button class="btn btn-gold" data-notes="${w.id}" style="margin-left:6px;">จุดเด่น/จุดที่ควรพัฒนา</button></td>
     </tr>`;
   });
   html += `</tbody></table></div></div>`;

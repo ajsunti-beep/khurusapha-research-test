@@ -167,18 +167,6 @@
     text-align:center;
   }
 
-  .doclink-strip{
-    background:#E8F1FC;
-    color:#12406B;
-    font-size:13.5px;
-    font-weight:600;
-    padding:9px 16px;
-    border-radius:8px;
-    margin:8px 0 18px;
-    text-align:center;
-  }
-  .doclink-strip a{ color:#0B5FBF; text-decoration:underline; margin-left:4px; }
-
   .icon-menu{
     display:flex;
     gap:20px;
@@ -1567,7 +1555,6 @@ async function renderApp(){
     if(!judgeSection){
       app.innerHTML = `
         <div class="judge-info-strip">${escapeHtml(judgeLabel(ej))}</div>
-        ${ctxGroupDocLink ? `<div class="doclink-strip"><span>📄 เล่มผลงานวิจัยทั้งหมด:</span> <a href="${escapeHtml(ctxGroupDocLink)}" target="_blank" rel="noopener">เปิดลิงก์ ↗</a></div>` : ''}
         <div id="tabBody"></div>
       `;
       renderJudgeHomeMenu();
@@ -1575,7 +1562,6 @@ async function renderApp(){
       app.innerHTML = `
         <a href="#" class="back-link" id="backToJudgeHome">← กลับ</a>
         <div class="judge-info-strip">${escapeHtml(judgeLabel(ej))}</div>
-        ${ctxGroupDocLink ? `<div class="doclink-strip"><span>📄 เล่มผลงานวิจัยทั้งหมด:</span> <a href="${escapeHtml(ctxGroupDocLink)}" target="_blank" rel="noopener">เปิดลิงก์ ↗</a></div>` : ''}
         <div id="tabBody"></div>
       `;
       document.getElementById('backToJudgeHome').onclick = (e)=>{ e.preventDefault(); confirmLeaveIfDirty(()=>{ judgeSection = null; renderApp(); }); };
@@ -3138,6 +3124,7 @@ function renderScoreTab(){
 function renderJudgeWorksList(){
   const body = document.getElementById('tabBody');
   let html = `<div class="card"><h2>ผลงานวิจัยที่ต้องประเมิน</h2>
+    ${ctxGroupDocLink ? `<a href="${escapeHtml(ctxGroupDocLink)}" target="_blank" rel="noopener" class="btn btn-gold" style="display:inline-flex;align-items:center;gap:8px;margin-bottom:16px;text-decoration:none;">📄 เปิดเล่มผลงานวิจัยทั้งหมด ↗</a>` : ''}
     <div style="overflow-x:auto;">
     <table><thead><tr><th>ลำดับที่</th><th>รหัสผลงาน</th><th>ชื่อผลงานวิจัย</th><th>ชื่อผู้วิจัย</th><th></th></tr></thead><tbody>`;
   ctxWorks.forEach((w,i)=>{

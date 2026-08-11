@@ -4,8 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ระบบประเมินคุณภาพผลงานวิจัยของคุรุสภา "ระดับภูมิภาค"</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Mali:wght@400;500;600;700&family=Noto+Serif+Thai:wght@500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Mali:wght@400;500;600;700&family=Noto+Serif+Thai:wght@500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap');
 
   :root{
     --bg:#F7F9FC;
@@ -689,7 +691,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 const firebaseConfig = {
   apiKey: "AIzaSyD0kcqbTgj1xrtShKdZbo7qP6gJ6ksguPc",
@@ -2723,6 +2724,7 @@ async function renderWorksTab(){
         const text = await file.text();
         rows = parseCsvText(text);
       } else {
+        await ensureXlsxLoaded();
         const buf = await file.arrayBuffer();
         const wb = XLSX.read(buf, { type:'array' });
         const sheet = wb.Sheets[wb.SheetNames[0]];
@@ -2783,6 +2785,19 @@ async function renderWorksTab(){
   await renderWorksList();
 }
 
+let xlsxLoadPromise = null;
+function ensureXlsxLoaded(){
+  if(window.XLSX) return Promise.resolve();
+  if(xlsxLoadPromise) return xlsxLoadPromise;
+  xlsxLoadPromise = new Promise((resolve, reject)=>{
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload = () => resolve();
+    s.onerror = () => { xlsxLoadPromise = null; reject(new Error('โหลดตัวอ่านไฟล์ Excel ไม่สำเร็จ')); };
+    document.head.appendChild(s);
+  });
+  return xlsxLoadPromise;
+}
 function parseCsvText(text){
   const rows = [];
   let row = [], field = '', inQuotes = false;
@@ -3825,11 +3840,13 @@ async function renderSummaryTab(){
   const headerLogoEl = document.getElementById('headerLogo');
   if(headerLogoEl) headerLogoEl.src = LOGO_DATA_URI;
 
-  await loadGroups();
-  await loadVisitors();
-  await loadSuperAdmins();
-  await loadUsernameMap();
-  await loadEvalYear();
+  await Promise.all([
+    loadGroups(),
+    loadVisitors(),
+    loadSuperAdmins(),
+    loadUsernameMap(),
+    loadEvalYear()
+  ]);
 
   const params = new URLSearchParams(window.location.search);
   const urlGroup = params.get('group');

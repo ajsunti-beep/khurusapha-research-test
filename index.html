@@ -797,6 +797,7 @@ let scoreJudge = 1;
 let scoreWorkId = null;
 let scoreLevels = {};
 let lastSavedScoreLevels = null;
+let lastSavedNotes = null;
 /* Tracks whether the score form has unsaved picks — used to warn before the
    picks get lost silently (closing the tab, or tapping a back link) since the
    level-picker buttons only update in-memory state until "บันทึกคะแนน" is pressed. */
@@ -804,8 +805,17 @@ function isScoreFormDirty(){
   if(currentTab !== 'score' || judgeScoreSubView !== 'form') return false;
   return JSON.stringify(scoreLevels) !== JSON.stringify(lastSavedScoreLevels || {});
 }
+function isNotesFormDirty(){
+  if(currentTab !== 'score' || judgeScoreSubView !== 'notes') return false;
+  const hEl = document.getElementById('notesHighlights');
+  const iEl = document.getElementById('notesImprovements');
+  if(!hEl || !iEl) return false;
+  const cur = { highlights: hEl.value, improvements: iEl.value };
+  const saved = lastSavedNotes || { highlights:'', improvements:'' };
+  return cur.highlights !== (saved.highlights||'') || cur.improvements !== (saved.improvements||'');
+}
 window.addEventListener('beforeunload', (e)=>{
-  if(isScoreFormDirty()){
+  if(isScoreFormDirty() || isNotesFormDirty()){
     e.preventDefault();
     e.returnValue = '';
   }
@@ -830,6 +840,20 @@ function confirmLeaveIfDirty(proceedFn){
   toast.scrollIntoView({ behavior:'smooth', block:'center' });
   document.getElementById('confirmLeaveBtn').onclick = ()=> proceedFn();
   document.getElementById('cancelLeaveBtn').onclick = ()=>{ toast.style.color=''; toast.innerHTML=''; };
+}
+function confirmLeaveNotesIfDirty(proceedFn){
+  if(!isNotesFormDirty()){ proceedFn(); return; }
+  const toast = document.getElementById('notesToast');
+  if(!toast){ proceedFn(); return; }
+  toast.style.color = 'var(--red)';
+  toast.innerHTML = `คุณยังไม่ได้กดบันทึกจุดเด่น/จุดที่ควรพัฒนาที่พิมพ์ไว้ หากออกจากหน้านี้ตอนนี้ ข้อความจะหายไป
+    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn btn-outline" id="confirmLeaveNotesBtn">ออกโดยไม่บันทึก</button>
+      <button class="btn btn-gold" id="cancelLeaveNotesBtn">อยู่หน้านี้ต่อ</button>
+    </div>`;
+  toast.scrollIntoView({ behavior:'smooth', block:'center' });
+  document.getElementById('confirmLeaveNotesBtn').onclick = ()=> proceedFn();
+  document.getElementById('cancelLeaveNotesBtn').onclick = ()=>{ toast.style.color=''; toast.innerHTML=''; };
 }
 /* Lightweight append-only edit history per group, capped so it can't grow
    forever. Best-effort: never blocks or fails the action it's logging for. */
@@ -1172,6 +1196,20 @@ async function loadScore(workId, judge){
 async function saveScore(workId, judge, data){
   await storage.set(`score:${workId}:${judge}`, JSON.stringify(data), true);
 }
+async function loadNotes(workId, judge){
+  try{
+    const r = await storage.get(`notes:${workId}:${judge}`, true);
+    return r ? JSON.parse(r.value) : null;
+  }catch(e){ return null; }
+}
+async function saveNotes(workId, judge, data){
+  await storage.set(`notes:${workId}:${judge}`, JSON.stringify(data), true);
+}
+async function loadAllNotesFor(workId){
+  const results = {};
+  for(const j of JUDGES){ results[j] = await loadNotes(workId, j); }
+  return results;
+}
 async function resetScoresForWork(workId){
   for(const j of JUDGES){
     try{ await storage.delete(`score:${workId}:${j}`, true); }catch(e){ /* ignore if already absent */ }
@@ -1249,6 +1287,13 @@ function buildSummaryRow(groupName, work, result, grade){
     grade || ''
   ];
 }
+const NOTES_ROW_HEADERS = ['บันทึกเมื่อ','กลุ่ม','รหัสผลงานวิจัย','ชื่อผลงานวิจัย','ผู้วิจัย','กรรมการ','จุดเด่น','จุดที่ควรพัฒนา'];
+function buildNotesRow(groupName, work, judgeName, notes){
+  return [
+    notes.updatedAt || '', groupName, work.title, work.researchName||'', work.presenter||'',
+    judgeName, notes.highlights||'', notes.improvements||''
+  ];
+}
 async function gatherAllScoreAndSummaryRows(){
   const scoreRows = [];
   const summaryRows = [];
@@ -1264,6 +1309,18 @@ async function gatherAllScoreAndSummaryRows(){
     summaryRows.push(buildSummaryRow(ctxGroupName, w, result, grade));
   }
   return { scoreRows, summaryRows };
+}
+async function gatherAllNotesRows(){
+  const notesRows = [];
+  for(const w of ctxWorks){
+    const notes = await loadAllNotesFor(w.id);
+    JUDGES.forEach(j=>{
+      if(notes[j] && ((notes[j].highlights && notes[j].highlights.trim()) || (notes[j].improvements && notes[j].improvements.trim()))){
+        notesRows.push(buildNotesRow(ctxGroupName, w, judgeLabel(j), notes[j]));
+      }
+    });
+  }
+  return notesRows;
 }
 function csvEscapeCell(v){
   const s = v===null || v===undefined ? '' : String(v);
@@ -2482,6 +2539,7 @@ async function renderWorksTab(){
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-outline" id="exportScoresCsvBtn">ดาวน์โหลดคะแนนดิบ (CSV)</button>
         <button class="btn btn-outline" id="exportSummaryCsvBtn">ดาวน์โหลดสรุปผล (CSV)</button>
+        <button class="btn btn-outline" id="exportNotesCsvBtn">ดาวน์โหลดจุดเด่น/จุดที่ควรพัฒนา (CSV)</button>
       </div>
       <div class="toast" id="csvToast"></div>
     </div>
@@ -2613,6 +2671,25 @@ async function renderWorksTab(){
       downloadCsvFile(`สรุปผล-${ctxGroupName}.csv`.replace(/[\\/:*?"<>|]/g,''), csv);
       toast.style.color = 'var(--green)';
       toast.textContent = `ดาวน์โหลดแล้ว (${summaryRows.length} แถว)`;
+    }
+    btn.textContent = original;
+    btn.disabled = false;
+  };
+  document.getElementById('exportNotesCsvBtn').onclick = async ()=>{
+    const btn = document.getElementById('exportNotesCsvBtn');
+    const toast = document.getElementById('csvToast');
+    const original = btn.textContent;
+    btn.textContent = 'กำลังเตรียมไฟล์...';
+    btn.disabled = true;
+    const notesRows = await gatherAllNotesRows();
+    if(notesRows.length===0){
+      toast.style.color = 'var(--red)';
+      toast.textContent = 'ยังไม่มีจุดเด่น/จุดที่ควรพัฒนาที่บันทึกไว้ในกลุ่มนี้';
+    } else {
+      const csv = rowsToCsv(NOTES_ROW_HEADERS, notesRows);
+      downloadCsvFile(`จุดเด่นจุดที่ควรพัฒนา-${ctxGroupName}.csv`.replace(/[\\/:*?"<>|]/g,''), csv);
+      toast.style.color = 'var(--green)';
+      toast.textContent = `ดาวน์โหลดแล้ว (${notesRows.length} แถว)`;
     }
     btn.textContent = original;
     btn.disabled = false;
@@ -3115,6 +3192,8 @@ function renderScoreTab(){
     scoreJudge = ej;
     if(judgeScoreSubView === 'form' && scoreWorkId){
       renderJudgeScoreForm();
+    } else if(judgeScoreSubView === 'notes' && scoreWorkId){
+      renderJudgeNotesForm();
     } else {
       renderJudgeWorksList();
     }
@@ -3163,7 +3242,7 @@ function renderJudgeWorksList(){
       <td><strong>${escapeHtml(w.title)}</strong></td>
       <td>${escapeHtml(w.researchName||'-')}</td>
       <td>${escapeHtml(w.presenter||'-')}</td>
-      <td><button class="btn btn-primary" data-score="${w.id}">ให้คะแนน</button></td>
+      <td style="white-space:nowrap;"><button class="btn btn-primary" data-score="${w.id}">ให้คะแนน</button> <button class="btn btn-outline" data-notes="${w.id}" style="margin-left:6px;">จุดเด่น/จุดที่ควรพัฒนา</button></td>
     </tr>`;
   });
   html += `</tbody></table></div></div>`;
@@ -3175,6 +3254,67 @@ function renderJudgeWorksList(){
       renderJudgeScoreForm();
     };
   });
+  body.querySelectorAll('button[data-notes]').forEach(btn=>{
+    btn.onclick = ()=>{
+      scoreWorkId = btn.dataset.notes;
+      judgeScoreSubView = 'notes';
+      renderJudgeNotesForm();
+    };
+  });
+}
+
+function renderJudgeNotesForm(){
+  const body = document.getElementById('tabBody');
+  const work = ctxWorks.find(w=>w.id===scoreWorkId);
+  body.innerHTML = `
+    <a href="#" class="back-link" id="backToWorksListNotes">← กลับไปยังรายการผลงาน</a>
+    <div class="card">
+      <h2>จุดเด่น/จุดที่ควรพัฒนา: ${escapeHtml(work ? work.title : '')}</h2>
+      <p style="font-size:12.5px;color:var(--muted);margin:-6px 0 14px;">ผู้วิจัย: ${escapeHtml((work && work.presenter) || '-')}</p>
+      <label class="field-label">จุดเด่น</label>
+      <textarea id="notesHighlights" rows="4" style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:14px;resize:vertical;" placeholder="ระบุจุดเด่นของผลงานวิจัยเรื่องนี้"></textarea>
+      <label class="field-label" style="margin-top:14px;">จุดที่ควรพัฒนา</label>
+      <textarea id="notesImprovements" rows="4" style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:14px;resize:vertical;" placeholder="ระบุจุดที่ควรพัฒนาของผลงานวิจัยเรื่องนี้"></textarea>
+      <div style="margin-top:14px;">
+        <button class="btn btn-gold" id="saveNotesBtn">บันทึก</button>
+      </div>
+      <div class="toast" id="notesToast"></div>
+    </div>
+  `;
+  document.getElementById('backToWorksListNotes').onclick = (e)=>{
+    e.preventDefault();
+    confirmLeaveNotesIfDirty(()=>{ judgeScoreSubView = 'list'; renderJudgeWorksList(); });
+  };
+  document.getElementById('saveNotesBtn').onclick = async ()=>{
+    const btn = document.getElementById('saveNotesBtn');
+    const toast = document.getElementById('notesToast');
+    const original = btn.textContent;
+    const highlights = document.getElementById('notesHighlights').value.trim();
+    const improvements = document.getElementById('notesImprovements').value.trim();
+    btn.disabled = true;
+    btn.textContent = 'กำลังบันทึก...';
+    try{
+      const data = { highlights, improvements, updatedAt: new Date().toISOString() };
+      await saveNotes(scoreWorkId, scoreJudge, data);
+      lastSavedNotes = { highlights, improvements };
+      logAudit(ctxGroupId, 'save_notes', `${judgeLabel(scoreJudge)} บันทึกจุดเด่น/จุดที่ควรพัฒนา "${work ? work.title : ''}"`).catch(()=>{});
+      toast.style.color = 'var(--green)';
+      toast.textContent = 'บันทึกเรียบร้อยแล้ว';
+      btn.textContent = 'บันทึกแล้ว ✓';
+    }catch(err){
+      toast.style.color = 'var(--red)';
+      toast.textContent = 'บันทึกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง';
+      btn.textContent = original;
+    }
+    btn.disabled = false;
+    setTimeout(()=>{ if(btn.textContent==='บันทึกแล้ว ✓') btn.textContent = original; }, 1500);
+  };
+  (async ()=>{
+    const existing = await loadNotes(scoreWorkId, scoreJudge);
+    document.getElementById('notesHighlights').value = existing ? (existing.highlights||'') : '';
+    document.getElementById('notesImprovements').value = existing ? (existing.improvements||'') : '';
+    lastSavedNotes = { highlights: existing ? (existing.highlights||'') : '', improvements: existing ? (existing.improvements||'') : '' };
+  })();
 }
 
 function renderJudgeScoreForm(){

@@ -167,6 +167,21 @@
     text-align:center;
   }
 
+  .doclink-btn{
+    display:inline-block;
+    background:var(--blue);
+    color:#fff;
+    font-size:11px;
+    font-weight:600;
+    line-height:1.15;
+    padding:4px 16px;
+    border-radius:8px;
+    text-decoration:none;
+    text-align:center;
+  }
+  .doclink-btn:hover{opacity:.88;}
+  .doclink-btn-wrap{ text-align:center; margin-bottom:16px; }
+
   .icon-menu{
     display:flex;
     gap:20px;
@@ -3124,7 +3139,7 @@ function renderScoreTab(){
 function renderJudgeWorksList(){
   const body = document.getElementById('tabBody');
   let html = `<div class="card"><h2>ผลงานวิจัยที่ต้องประเมิน</h2>
-    ${ctxGroupDocLink ? `<a href="${escapeHtml(ctxGroupDocLink)}" target="_blank" rel="noopener" class="btn btn-gold" style="display:inline-flex;align-items:center;gap:8px;margin-bottom:16px;text-decoration:none;">📄 เปิดเล่มผลงานวิจัยทั้งหมด ↗</a>` : ''}
+    ${ctxGroupDocLink ? `<div class="doclink-btn-wrap"><a href="${escapeHtml(ctxGroupDocLink)}" target="_blank" rel="noopener" class="doclink-btn">เล่มผลงานวิจัย<br>คลิก!!</a></div>` : ''}
     <div style="overflow-x:auto;">
     <table><thead><tr><th>ลำดับที่</th><th>รหัสผลงาน</th><th>ชื่อผลงานวิจัย</th><th>ชื่อผู้วิจัย</th><th></th></tr></thead><tbody>`;
   ctxWorks.forEach((w,i)=>{

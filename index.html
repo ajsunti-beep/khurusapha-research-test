@@ -978,6 +978,302 @@ function isSignaturePadEmpty(canvasId){
    signature small (Firestore doc size, load time) even if the original photo
    from a phone camera is several MB. Flattens transparency to white so it looks
    consistent with the hand-drawn signature pad. */
+/* ---------- signature photo cleanup: helper functions ---------- */
+/* Cheap approximate Gaussian blur via a separable sliding-window box blur
+   (two passes horizontal+vertical, run twice) — used to estimate the LOCAL
+   background tone under uneven lighting/shadow, without needing any external
+   image-processing library. O(w*h) regardless of radius. */
+function sigBoxBlur1D(src, w, h, radius, horizontal){
+  const out = new Float32Array(w*h);
+  const size = radius*2+1;
+  if(horizontal){
+    for(let y=0; y<h; y++){
+      const rowOff = y*w;
+      let sum = 0;
+      for(let x=-radius; x<=radius; x++){
+        const xi = Math.min(w-1, Math.max(0, x));
+        sum += src[rowOff+xi];
+      }
+      for(let x=0; x<w; x++){
+        out[rowOff+x] = sum/size;
+        const xOut = Math.max(0, x-radius);
+        const xIn = Math.min(w-1, x+radius+1);
+        sum += src[rowOff+xIn] - src[rowOff+xOut];
+      }
+    }
+  } else {
+    for(let x=0; x<w; x++){
+      let sum = 0;
+      for(let y=-radius; y<=radius; y++){
+        const yi = Math.min(h-1, Math.max(0, y));
+        sum += src[yi*w+x];
+      }
+      for(let y=0; y<h; y++){
+        out[y*w+x] = sum/size;
+        const yOut = Math.max(0, y-radius);
+        const yIn = Math.min(h-1, y+radius+1);
+        sum += src[yIn*w+x] - src[yOut*w+x];
+      }
+    }
+  }
+  return out;
+}
+function sigBoxBlur2D(src, w, h, radius, passes){
+  passes = passes || 2;
+  let cur = src;
+  for(let p=0; p<passes; p++){
+    cur = sigBoxBlur1D(cur, w, h, radius, true);
+    cur = sigBoxBlur1D(cur, w, h, radius, false);
+  }
+  return cur;
+}
+/* Percentile of a value array via a 256-bucket brightness histogram — much
+   faster than sorting the full pixel array for a typical signature photo. */
+function sigPercentile(values, pct){
+  const hist = new Array(256).fill(0);
+  for(let i=0; i<values.length; i++){
+    hist[Math.min(255, Math.max(0, Math.round(values[i])))]++;
+  }
+  const target = values.length * pct / 100;
+  let cum = 0;
+  for(let v=0; v<256; v++){
+    cum += hist[v];
+    if(cum >= target) return v;
+  }
+  return 255;
+}
+function sigMedianFilter3x3(src, w, h){
+  const out = new Float32Array(w*h);
+  const buf = new Float32Array(9);
+  for(let y=0; y<h; y++){
+    for(let x=0; x<w; x++){
+      let k = 0;
+      for(let dy=-1; dy<=1; dy++){
+        for(let dx=-1; dx<=1; dx++){
+          const xx = Math.min(w-1, Math.max(0, x+dx));
+          const yy = Math.min(h-1, Math.max(0, y+dy));
+          buf[k++] = src[yy*w+xx];
+        }
+      }
+      out[y*w+x] = Array.from(buf).sort((a,b)=>a-b)[4];
+    }
+  }
+  return out;
+}
+/* Connected-component labeling (8-connectivity) via iterative flood fill —
+   used to tell a real pen/pencil stroke (one solidly-dark connected blob)
+   apart from paper grain (many tiny scattered blobs) or a photo shadow
+   (a large but faint blob). Iterative (stack-based), not recursive, so it
+   can't blow the call stack on a big connected region. */
+function sigLabelComponents(mask, w, h){
+  const labels = new Int32Array(w*h);
+  let nextLabel = 0;
+  const sizes = [];
+  const stack = new Int32Array(w*h);
+  for(let start=0; start<w*h; start++){
+    if(!mask[start] || labels[start]!==0) continue;
+    nextLabel++;
+    let sp = 0;
+    stack[sp++] = start;
+    labels[start] = nextLabel;
+    let size = 0;
+    while(sp>0){
+      const p = stack[--sp];
+      size++;
+      const x = p % w, y = (p / w) | 0;
+      for(let dy=-1; dy<=1; dy++){
+        for(let dx=-1; dx<=1; dx++){
+          if(dx===0 && dy===0) continue;
+          const nx = x+dx, ny = y+dy;
+          if(nx<0 || nx>=w || ny<0 || ny>=h) continue;
+          const np = ny*w+nx;
+          if(mask[np] && labels[np]===0){
+            labels[np] = nextLabel;
+            stack[sp++] = np;
+          }
+        }
+      }
+    }
+    sizes[nextLabel] = size;
+  }
+  return { labels, sizes, count: nextLabel };
+}
+/* Cleans up a photographed/scanned signature: makes the paper background fully
+   transparent, forces the ink strokes to solid dark regardless of original
+   pen/pencil darkness, and anti-aliases the stroke edge.
+   Adapts automatically to what the photo looks like (adaptive "triage"):
+     - faint pencil ink (narrow brightness gap vs. paper) needs a stronger
+       gamma boost or the stroke barely shows up at all;
+     - uneven lighting / a soft shadow across the paper, OR very faint ink,
+       both need the local-background-flatten path (divide out a blurred
+       estimate of the local paper tone) — a single global brightness split
+       (like Otsu) still lets a smooth shadow blob survive as visible alpha,
+       and with faint ink the same global stretch amplifies ordinary paper
+       grain into visible noise across the whole photo.
+   After thresholding, small noise specks AND large-but-faint shadow blobs
+   are both dropped via connected-component filtering: a real stroke is a
+   blob that's both reasonably sized AND solidly dark on average — paper
+   grain fails the size test, a soft shadow fails the darkness test.
+   Returns a small QA summary so the calling UI can show the person a
+   heads-up if the result looks like it might need a second look — this
+   function never blocks or throws on its own; the person always gets to
+   see the preview and decide before anything is saved. */
+function cleanUpSignaturePhoto(canvas){
+  const w = canvas.width, h = canvas.height;
+  const ctx = canvas.getContext('2d');
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const data = imgData.data;
+  const n = w*h;
+
+  const lum = new Float32Array(n);
+  for(let p=0, i=0; p<n; p++, i+=4){
+    lum[p] = 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2];
+  }
+
+  const bgLum90 = sigPercentile(lum, 90);
+  const inkLum1 = sigPercentile(lum, 1);
+  const inkBgGap = bgLum90 - inkLum1;
+  const faintInk = inkBgGap < 80;
+  const gamma = faintInk ? 0.5 : 0.65;
+
+  const probeRadius = Math.max(3, Math.round(Math.min(w, h) * 0.12));
+  const bgProbe = sigBoxBlur2D(lum, w, h, probeRadius, 2);
+
+  // ใช้ local-bg flatten (ปรับพื้นหลังท้องถิ่นให้เรียบก่อนคิด contrast) กับทุกภาพเสมอ
+  // แทนที่จะเลือกวิธีตามการตรวจจับ "แสงไม่สม่ำเสมอ" — เดิมเคยแยกใช้ global threshold เมื่อดู
+  // เหมือนแสงสม่ำเสมอ แต่พบเคสจริงที่พลาด: ภาพถ่ายกระดาษที่มีรอยตัวอักษรพิมพ์ทะลุมาจากด้านหลัง
+  // เป็นบริเวณกว้างแต่จาง ทำให้ตัวเลขวัดความสม่ำเสมอ (ซึ่งคำนวณจากพิกเซล "สว่างกว่า median"
+  // เท่านั้น) ต่ำเกินจริง เพราะบริเวณรอยเปื้อนถูกกรองออกจากการคำนวณไปเองตั้งแต่แรกในฐานะพิกเซลที่
+  // มืดกว่า median — ผลคือ global threshold ดึงรอยเปื้อนนั้นติดมาเป็นเงาปนกับลายเซ็นจริง ในขณะที่
+  // local-bg flatten แก้ปัญหานี้ได้ตรงจุดกว่ามาก (ตัดรอยเปื้อนกว้างๆ ออกไปเองโดยธรรมชาติ โดยไม่
+  // กระทบเส้นหมึกจริงที่มีคอนทราสต์เฉพาะจุดสูงกว่าเสมอ) จึงไม่ต้องเสี่ยงพึ่ง heuristic แยกกรณีอีก
+  const flat = new Float32Array(n);
+  for(let i=0; i<n; i++) flat[i] = Math.min(255, Math.max(0, (lum[i] / Math.max(1, bgProbe[i])) * 255));
+  const bgF = sigPercentile(flat, 92);
+  const inkF = sigPercentile(flat, 0.5);
+  const span = Math.max(bgF - inkF, 1);
+  let alpha = new Float32Array(n);
+  for(let i=0; i<n; i++){
+    const norm = Math.min(1, Math.max(0, (bgF - flat[i]) / span));
+    alpha[i] = Math.pow(norm, gamma) * 255;
+  }
+
+  // denoise: median filter + noise floor, แล้ว rescale กลับให้เต็ม 0-255
+  alpha = sigMedianFilter3x3(alpha, w, h);
+  const noiseFloor = 60;
+  let maxA = 0;
+  for(let i=0; i<n; i++){ if(alpha[i] < noiseFloor) alpha[i] = 0; if(alpha[i] > maxA) maxA = alpha[i]; }
+  if(maxA > 0){
+    for(let i=0; i<n; i++) alpha[i] = Math.min(255, Math.max(0, (alpha[i]-noiseFloor)/(255-noiseFloor)*255));
+  }
+
+  // connected-component filtering: ตัดทั้ง noise เม็ดเล็กและเงาก้อนใหญ่ที่จางกว่าหมึกจริง
+  const mask = new Uint8Array(n);
+  for(let i=0; i<n; i++) mask[i] = alpha[i] > 20 ? 1 : 0;
+  const { labels, count } = sigLabelComponents(mask, w, h);
+  const compSize = new Array(count+1).fill(0);
+  // ฮิสโตแกรม alpha แยกต่อ blob (256 ระดับ) ใช้หา percentile ต่อก้อนแบบเร็ว
+  // โดยไม่ต้อง sort พิกเซลทั้งหมดของแต่ละก้อน
+  const blobHist = Array.from({length: count+1}, () => new Uint32Array(256));
+  for(let i=0; i<n; i++){
+    const lbl = labels[i];
+    if(lbl>0){
+      compSize[lbl]++;
+      blobHist[lbl][Math.min(255, Math.max(0, Math.round(alpha[i])))]++;
+    }
+  }
+  const minSize = Math.max(50, Math.round(0.0014 * n));
+  // เกณฑ์นี้เช็คว่า "ก้อนนี้มีแกนหมึกทึบจริงอยู่บ้างไหม" (p90 ของ alpha ในก้อน) แทนที่จะเช็ค
+  // ค่าเฉลี่ยทั้งก้อน — ค่าเฉลี่ยใช้ไม่ได้กับลายเซ็นที่เป็นเส้นวนต่อกันเป็นก้อนใหญ่ก้อนเดียว (เช่น
+  // ปากกาน้ำเงินอ่อน) เพราะส่วนเส้นบางๆ/ปลายเส้นจางในก้อนเดียวกันจะดึงค่าเฉลี่ยทั้งก้อนลงมาต่ำกว่า
+  // เกณฑ์ ทั้งที่แกนกลางเส้นเข้มจริง p90 ตรวจแค่ว่ามีพิกเซลส่วนที่เข้มจริงอยู่บ้าง (ไม่สนใจส่วน
+  // บาง/จางที่เหลือ) จึงแยกหมึกจริงออกจากเงา/noise ได้แม่นยำกว่า (ยืนยันด้วยภาพทดสอบจริงแล้ว)
+  const minP90Alpha = 140;
+  let keptBlobs = 0, droppedBlobs = 0, suspiciousMerged = false;
+  const keep = new Uint8Array(count+1);
+  for(let lbl=1; lbl<=count; lbl++){
+    if(compSize[lbl] < minSize){ droppedBlobs++; continue; }
+    const hist = blobHist[lbl];
+    const target = compSize[lbl] * 0.9;
+    let cum = 0, p90 = 255;
+    for(let v=0; v<256; v++){ cum += hist[v]; if(cum >= target){ p90 = v; break; } }
+    if(p90 >= minP90Alpha){
+      keep[lbl] = 1;
+      keptBlobs++;
+      if(compSize[lbl] > 0.4*n) suspiciousMerged = true;
+    } else {
+      droppedBlobs++;
+    }
+  }
+  let coveragePixels = 0;
+  for(let i=0; i<n; i++){
+    if(!keep[labels[i]]) alpha[i] = 0;
+    if(alpha[i] > 20) coveragePixels++;
+  }
+
+  for(let p=0, i=0; p<n; p++, i+=4){
+    data[i] = 20; data[i+1] = 20; data[i+2] = 30;
+    data[i+3] = Math.round(alpha[p]);
+  }
+  ctx.putImageData(imgData, 0, 0);
+
+  return {
+    keptBlobs, droppedBlobs, suspiciousMerged,
+    coverage: coveragePixels / n,
+    noContent: keptBlobs === 0,
+  };
+}
+/* Turns the auto-QA summary from cleanUpSignaturePhoto into a short Thai
+   heads-up message for the preview panel. Returns null when the result
+   looks clean — the preview stays uncluttered unless there's something
+   worth a second look. This is advisory only: the person can still see
+   the actual image above it and decide for themselves before confirming. */
+function sigQaWarning(qa){
+  if(!qa) return null;
+  if(qa.noContent){
+    return 'ไม่พบเส้นลายเซ็นที่ชัดเจนในภาพนี้ กรุณาถ่ายรูปใหม่ให้เห็นลายเซ็นชัดขึ้นและมีแสงสม่ำเสมอ';
+  }
+  if(qa.suspiciousMerged){
+    return 'ภาพนี้อาจมีเงาหรือแสงไม่สม่ำเสมอปนอยู่กับลายเซ็น กรุณาตรวจสอบภาพตัวอย่างด้านบนให้แน่ใจก่อนกดยืนยัน';
+  }
+  if(qa.keptBlobs > 4){
+    return 'ตรวจพบเส้นลายเซ็นหลายจุดแยกกัน กรุณาตรวจสอบภาพตัวอย่างด้านบนว่าครบถ้วนตรงกับที่เซ็นจริง';
+  }
+  return null;
+}
+
+/* Shared by both the drawn-signature pad and the cleaned-up uploaded photo:
+   crops a canvas tightly to the bounding box of its non-transparent pixels
+   and returns a NEW canvas (caller decides whether to export it to a data URL). */
+function cropCanvasToContent(canvas, padding){
+  padding = padding==null ? 4 : padding;
+  const w = canvas.width, h = canvas.height;
+  const ctx = canvas.getContext('2d');
+  const data = ctx.getImageData(0, 0, w, h).data;
+  let minX=w, minY=h, maxX=-1, maxY=-1;
+  for(let y=0; y<h; y++){
+    for(let x=0; x<w; x++){
+      const alpha = data[(y*w+x)*4+3];
+      if(alpha>10){
+        if(x<minX) minX=x;
+        if(x>maxX) maxX=x;
+        if(y<minY) minY=y;
+        if(y>maxY) maxY=y;
+      }
+    }
+  }
+  if(maxX<0) return canvas; // nothing detected — return original untouched
+  minX = Math.max(0, minX-padding);
+  minY = Math.max(0, minY-padding);
+  maxX = Math.min(w-1, maxX+padding);
+  maxY = Math.min(h-1, maxY+padding);
+  const cropW = maxX-minX+1, cropH = maxY-minY+1;
+  const out = document.createElement('canvas');
+  out.width = cropW;
+  out.height = cropH;
+  out.getContext('2d').drawImage(canvas, minX, minY, cropW, cropH, 0, 0, cropW, cropH);
+  return out;
+}
 function readImageFileToDataURL(file, maxDim){
   maxDim = maxDim || 500;
   return new Promise((resolve, reject)=>{
@@ -1005,7 +1301,13 @@ function readImageFileToDataURL(file, maxDim){
         ctx.fillStyle = '#fff';
         ctx.fillRect(0, 0, w, h);
         ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/png'));
+        const qaInfo = cleanUpSignaturePhoto(canvas);
+        if(qaInfo.noContent){
+          reject(Object.assign(new Error('no signature content detected'), { code:'client/no-signature-detected' }));
+          return;
+        }
+        const cropped = cropCanvasToContent(canvas, 6);
+        resolve({ dataUrl: cropped.toDataURL('image/png'), qaInfo });
       };
       img.src = reader.result;
     };
@@ -1160,14 +1462,44 @@ function isPinVerified(groupId, judge){
 function markPinVerified(groupId, judge){
   try{ sessionStorage.setItem(`pinOK:${groupId}:${judge}`, '1'); }catch(e){}
 }
+/* Signatures are stored ONE DOCUMENT PER JUDGE (judgeSignatures:{groupId}:{judge})
+   rather than a single combined document for all 3 judges. This is essential:
+   with a combined document, if two judges sign around the same time, each browser
+   holds its own (possibly stale) in-memory copy of the other judges' signatures;
+   whichever judge saves LAST overwrites the whole document and silently erases
+   the other judge's signature. Per-judge documents make each judge's save fully
+   independent, so concurrent signing can never clobber another judge's entry. */
 async function loadJudgeSignaturesFor(groupId){
-  try{
-    const r = await storage.get(`judgeSignatures:${groupId}`, true);
-    return r ? { 1:null,2:null,3:null, ...JSON.parse(r.value) } : { 1:null,2:null,3:null };
-  }catch(e){ return { 1:null,2:null,3:null }; }
+  const result = { 1:null, 2:null, 3:null };
+  const perJudge = await Promise.all(JUDGES.map(async j=>{
+    try{
+      const r = await storage.get(`judgeSignatures:${groupId}:${j}`, true);
+      return r ? JSON.parse(r.value) : null;
+    }catch(e){ return null; }
+  }));
+  JUDGES.forEach((j,idx)=>{ result[j] = perJudge[idx]; });
+  // Backward compatibility: groups signed before this fix have their data in the
+  // old combined document. Only fall back to it for judges with no per-judge doc yet.
+  if(JUDGES.some(j=>!result[j])){
+    try{
+      const legacyR = await storage.get(`judgeSignatures:${groupId}`, true);
+      if(legacyR){
+        const legacy = JSON.parse(legacyR.value);
+        JUDGES.forEach(j=>{ if(!result[j] && legacy[j]) result[j] = legacy[j]; });
+      }
+    }catch(e){ /* no legacy doc — fine, nothing to migrate */ }
+  }
+  return result;
+}
+async function saveJudgeSignatureFor(groupId, judge, sigData){
+  await storage.set(`judgeSignatures:${groupId}:${judge}`, JSON.stringify(sigData), true);
 }
 async function saveJudgeSignaturesFor(groupId, sigs){
-  await storage.set(`judgeSignatures:${groupId}`, JSON.stringify(sigs), true);
+  // Bulk helper kept for admin actions that legitimately touch all 3 slots at
+  // once (backup restore, "reset all signatures") — safe there because those
+  // are single-admin actions, not concurrent judges. Still writes per-judge
+  // documents underneath, never the old combined document.
+  await Promise.all(JUDGES.map(j => storage.set(`judgeSignatures:${groupId}:${j}`, JSON.stringify(sigs[j]||null), true)));
 }
 async function loadCertifyApprovedFor(groupId){
   try{
@@ -3411,11 +3743,6 @@ function renderRubricForm(){
       renderRubricForm();
       return;
     }
-    if(!isComplete(scoreLevels)){
-      toast.style.color = 'var(--red)';
-      toast.textContent = 'กรุณาให้คะแนนครบทุกตัวบ่งชี้ก่อนบันทึก';
-      return;
-    }
     const levelsSnapshot = {...scoreLevels};
     const original = btn.textContent;
     btn.disabled = true;
@@ -3843,14 +4170,26 @@ async function renderSummaryTab(){
             if(!file) return;
             previewWrap.innerHTML = `<span style="color:var(--muted);font-size:13px;">กำลังโหลดรูป...</span>`;
             try{
-              uploadedDataUrl = await readImageFileToDataURL(file, 500);
-              previewWrap.innerHTML = `<img src="${uploadedDataUrl}" alt="ลายเซ็นที่แนบ" style="max-width:100%;max-height:220px;display:block;margin:0 auto;">`;
+              const result = await readImageFileToDataURL(file, 500);
+              uploadedDataUrl = result.dataUrl;
+              const warnMsg = sigQaWarning(result.qaInfo);
+              // พื้นตารางหมากรุก (checkerboard) ให้เห็นความโปร่งใสจริง ไม่ใช่แค่บนพื้นขาว
+              // ซึ่งอาจกลืนไปกับเงา/noise จางๆ ที่หลงเหลืออยู่จนมองไม่เห็น
+              previewWrap.innerHTML = `
+                <div style="display:inline-block;max-width:100%;border-radius:6px;overflow:hidden;
+                  background-image:linear-gradient(45deg,#ccc 25%,transparent 25%),linear-gradient(-45deg,#ccc 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#ccc 75%),linear-gradient(-45deg,transparent 75%,#ccc 75%);
+                  background-size:16px 16px;background-position:0 0,0 8px,8px -8px,-8px 0px;">
+                  <img src="${uploadedDataUrl}" alt="ลายเซ็นที่แนบ" style="max-width:100%;max-height:220px;display:block;margin:0 auto;">
+                </div>
+                ${warnMsg ? `<p style="font-size:11.5px;color:var(--orange);margin:8px 0 0;text-align:center;">⚠ ${warnMsg}</p>` : ''}
+              `;
             }catch(err){
               uploadedDataUrl = null;
               previewWrap.innerHTML = `<span style="color:var(--muted);font-size:13px;">แตะเพื่อเลือกไฟล์ หรือลากรูปมาวางตรงนี้</span>`;
               toast.style.color = 'var(--red)';
               if(err && err.code==='client/invalid-file-type') toast.textContent = 'กรุณาเลือกไฟล์รูปภาพเท่านั้น (JPG, PNG)';
               else if(err && err.code==='client/file-too-large') toast.textContent = 'ไฟล์ใหญ่เกินไป กรุณาเลือกไฟล์ไม่เกิน 8MB';
+              else if(err && err.code==='client/no-signature-detected') toast.textContent = 'ไม่พบเส้นลายเซ็นที่ชัดเจนในภาพนี้ กรุณาถ่ายรูปใหม่ให้เห็นลายเซ็นชัดขึ้นและมีแสงสม่ำเสมอ';
               else toast.textContent = 'ไม่สามารถอ่านไฟล์รูปภาพนี้ได้ กรุณาลองไฟล์อื่น';
             }
           };
@@ -3905,13 +4244,14 @@ async function renderSummaryTab(){
           confirmBtn.disabled = true;
           confirmBtn.textContent = 'กำลังบันทึก...';
           const prevSignatures = { ...ctxJudgeSignatures };
-          ctxJudgeSignatures[ej] = { signature: dataUrl, at: Date.now() };
+          const sigData = { signature: dataUrl, at: Date.now() };
+          ctxJudgeSignatures[ej] = sigData;
           try{
             if(navigator.onLine === false){
               throw Object.assign(new Error('offline'), { code:'client/offline' });
             }
             await withTimeout(
-              saveJudgeSignaturesFor(ctxGroupId, ctxJudgeSignatures),
+              saveJudgeSignatureFor(ctxGroupId, ej, sigData),
               15000,
               'การบันทึกใช้เวลานานเกินไป'
             );

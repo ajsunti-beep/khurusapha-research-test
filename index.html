@@ -2110,10 +2110,11 @@ async function renderVisitorGroupsScreen(){
   `;
   const wrap = document.getElementById('visitorGroupsListWrap');
   wrap.innerHTML = groups.map(g=>`<div class="group-card" id="vgrow-${g.id}"></div>`).join('');
-  for(const g of groups){
-    const w = await loadWorksFor(g.id);
+  const worksByGroup = await Promise.all(groups.map(g => loadWorksFor(g.id)));
+  groups.forEach((g, idx) => {
+    const w = worksByGroup[idx];
     const row = document.getElementById(`vgrow-${g.id}`);
-    if(!row) continue;
+    if(!row) return;
     row.innerHTML = `
       <div class="gc-info">
         <strong>${escapeHtml(g.name)}</strong>
@@ -2128,7 +2129,7 @@ async function renderVisitorGroupsScreen(){
       visitorSelectedGroupId = g.id;
       renderApp();
     };
-  }
+  });
 }
 
 async function renderHomeAdminsTab(){
@@ -2587,11 +2588,7 @@ async function renderHomeSystemTab(){
           loadCertifyApprovedFor(g.id),
           loadAuditLogFor(g.id)
         ]);
-        const worksWithScores = [];
-        for(const w of works){
-          const scores = await loadAllScoresFor(w.id);
-          worksWithScores.push({ ...w, scores });
-        }
+        const worksWithScores = await Promise.all(works.map(async w => ({ ...w, scores: await loadAllScoresFor(w.id) })));
         backup.groups.push({
           id: g.id, name: g.name,
           judgeNames: names, judgePins: pins,
@@ -2729,12 +2726,14 @@ async function renderGroupsList(){
     return;
   }
   wrap.innerHTML = groups.map(g=>`<div class="group-card" id="grow-${g.id}"></div>`).join('');
-  for(const g of groups){
-    const jn = await loadJudgeNamesFor(g.id);
-    const w = await loadWorksFor(g.id);
+  const results = await Promise.all(groups.map(async g => {
+    const [jn, w] = await Promise.all([loadJudgeNamesFor(g.id), loadWorksFor(g.id)]);
+    return { g, jn, w };
+  }));
+  results.forEach(({g, jn, w})=>{
     const namedCount = JUDGES.filter(n=>jn[n] && jn[n].trim()).length;
     renderGroupRow(g, w.length, namedCount);
-  }
+  });
 }
 
 function renderGroupRow(g, workCount, namedCount){
@@ -3999,25 +3998,19 @@ async function generatePdfReportPart2(){
         </colgroup>
         <thead><tr><th>ตัวบ่งชี้</th><th>น้ำหนัก</th><th>กรรมการ 1</th><th>กรรมการ 2</th><th>กรรมการ 3</th><th>ฐานนิยม</th><th>คะแนน</th></tr></thead><tbody>`;
     RUBRIC.forEach(dim=>{
-      const dimRows = dim.indicators.map(ind=>{
-        const judgeLevels = JUDGES.map(j=>(scores[j] && scores[j].levels && scores[j].levels[ind.id]) || null);
-        const complete = judgeLevels.every(v=>v!=null);
-        const mode = complete ? modeOf(judgeLevels) : null;
-        const score = (complete && mode!==null) ? mode*ind.weight : null;
-        return { ind, judgeLevels, complete, mode, score };
-      });
-      const dimIncomplete = dimRows.some(x=>!x.complete);
-      const dimConflict = !dimIncomplete && dimRows.some(x=>x.mode===null);
-      const dimScoreTotal = (!dimIncomplete && !dimConflict) ? dimRows.reduce((s,x)=>s+x.score,0) : null;
-      dimRows.forEach((x,idx)=>{
+      const dimIndicators = res.indicators.filter(ind=>ind.dimName===dim.name);
+      const dimConflict = dimIndicators.some(ind=>ind.conflict);
+      const dimResolved = dimIndicators.every(ind=>ind.score!==null);
+      const dimScoreTotal = dimResolved ? dimIndicators.reduce((s,ind)=>s+ind.score,0) : null;
+      dimIndicators.forEach((ind,idx)=>{
         html += `<tr>
-          <td style="white-space:nowrap;">${x.ind.id} ${escapeHtml(x.ind.name)}</td>
-          ${idx===0 ? `<td rowspan="${dimRows.length}" style="text-align:center;vertical-align:middle;">${dim.weight.toFixed(2)}</td>` : ''}
-          <td style="text-align:center">${x.judgeLevels[0]!=null ? x.judgeLevels[0] : '-'}</td>
-          <td style="text-align:center">${x.judgeLevels[1]!=null ? x.judgeLevels[1] : '-'}</td>
-          <td style="text-align:center">${x.judgeLevels[2]!=null ? x.judgeLevels[2] : '-'}</td>
-          <td style="text-align:center">${!x.complete ? '-' : (x.mode===null ? 'ไม่มี' : x.mode)}</td>
-          ${idx===0 ? `<td rowspan="${dimRows.length}" style="text-align:center;vertical-align:middle;">${dimIncomplete ? '-' : (dimConflict ? 'ต้องหารือ' : dimScoreTotal.toFixed(2))}</td>` : ''}
+          <td style="white-space:nowrap;">${ind.id} ${escapeHtml(ind.name)}</td>
+          ${idx===0 ? `<td rowspan="${dimIndicators.length}" style="text-align:center;vertical-align:middle;">${dim.weight.toFixed(2)}</td>` : ''}
+          <td style="text-align:center">${ind.judgeLevels[0]!=null ? ind.judgeLevels[0] : '-'}</td>
+          <td style="text-align:center">${ind.judgeLevels[1]!=null ? ind.judgeLevels[1] : '-'}</td>
+          <td style="text-align:center">${ind.judgeLevels[2]!=null ? ind.judgeLevels[2] : '-'}</td>
+          <td style="text-align:center">${ind.mode!==null ? ind.mode : (ind.conflict ? 'ไม่มี' : '-')}</td>
+          ${idx===0 ? `<td rowspan="${dimIndicators.length}" style="text-align:center;vertical-align:middle;">${dimScoreTotal!==null ? dimScoreTotal.toFixed(2) : (dimConflict ? 'ต้องหารือ' : '-')}</td>` : ''}
         </tr>`;
       });
     });
@@ -4345,7 +4338,7 @@ async function renderSummaryTab(){
               <td style="text-align:center">${ind.judgeLevels[1]!=null ? ind.judgeLevels[1] : dash}</td>
               <td style="text-align:center">${ind.judgeLevels[2]!=null ? ind.judgeLevels[2] : dash}</td>
               <td style="text-align:center">${ind.mode!==null ? ind.mode : (ind.conflict ? '<span style="color:var(--red);font-weight:600">ไม่มี</span>' : '<span style="color:var(--muted)">รอ</span>')}</td>
-              <td style="text-align:center">${ind.score!==null ? ind.score : (ind.conflict ? '<span style="color:var(--red)">ต้องหารือ</span>' : '<span style="color:var(--muted)">รอ</span>')}</td>
+              <td style="text-align:center">${ind.score!==null ? ind.score.toFixed(2) : (ind.conflict ? '<span style="color:var(--red)">ต้องหารือ</span>' : '<span style="color:var(--muted)">รอ</span>')}</td>
             </tr>`;
           });
           const dimConflict = dimIndicators.some(ind=>ind.score===null);

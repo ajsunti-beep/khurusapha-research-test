@@ -99,6 +99,13 @@ input:focus{outline:2px solid var(--blue-2);outline-offset:1px;}
 .chk-group label{display:flex;align-items:center;gap:5px;margin:0;color:var(--text);font-size:13px;}
 .back-link{display:inline-block;margin-bottom:16px;color:var(--blue-2);text-decoration:none;font-size:14px;cursor:pointer;}
 .back-link:hover{text-decoration:underline;}
+.pass-wrap{position:relative;}
+.pass-wrap input{padding-right:70px;}
+.pass-toggle{
+  position:absolute;right:10px;top:50%;transform:translateY(-50%);
+  background:none;border:none;color:var(--blue-2);font-size:12.5px;font-family:inherit;
+  cursor:pointer;padding:4px 6px;width:auto;margin:0;
+}
 </style>
 </head>
 <body>
@@ -108,7 +115,11 @@ input:focus{outline:2px solid var(--blue-2);outline-offset:1px;}
 </div>
 <div class="wrap">
   <div class="hero">
-    <img src="https://www.ksp.or.th/ksp2018/wp-content/uploads/2019/03/logo-ksp.png" onerror="this.style.display='none'">
+    <svg width="52" height="52" viewBox="0 0 52 52" style="margin-bottom:10px;">
+      <circle cx="26" cy="26" r="26" fill="#fff"/>
+      <path d="M26 14a7 7 0 100 14 7 7 0 000-14z" fill="var(--orange)"/>
+      <path d="M14 38c1.5-6 6-9 12-9s10.5 3 12 9" stroke="var(--orange)" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+    </svg>
     <h1>ระบบประเมินคุณภาพผลงานวิจัยของคุรุสภา</h1>
     <p>สำนักงานเลขาธิการคุรุสภา สำนักพัฒนาและส่งเสริมวิชาชีพ</p>
   </div>
@@ -269,7 +280,10 @@ async function renderAdminPanel(){
       <label>อีเมล (ใช้สำหรับล็อกอิน)</label>
       <input type="email" id="newEmail" placeholder="name@example.com">
       <label>รหัสผ่านชั่วคราว</label>
-      <input type="password" id="newPass" placeholder="อย่างน้อย 6 ตัวอักษร">
+      <div class="pass-wrap">
+        <input type="password" id="newPass" placeholder="อย่างน้อย 6 ตัวอักษร">
+        <button type="button" class="pass-toggle" id="togglePass">แสดง</button>
+      </div>
       <div class="chk-group" style="margin-top:14px;">
         <label><input type="checkbox" id="permRegional"> เห็นระบบภูมิภาค</label>
         <label><input type="checkbox" id="permNational"> เห็นระบบประเทศ</label>
@@ -292,6 +306,13 @@ async function renderAdminPanel(){
     </div>
   `;
   document.getElementById('backLink').onclick = renderMenu;
+  const togglePass = document.getElementById('togglePass');
+  const newPassInput = document.getElementById('newPass');
+  togglePass.onclick = ()=>{
+    const showing = newPassInput.type === 'text';
+    newPassInput.type = showing ? 'password' : 'text';
+    togglePass.textContent = showing ? 'แสดง' : 'ซ่อน';
+  };
   renderAdminList();
   renderSuperList();
 

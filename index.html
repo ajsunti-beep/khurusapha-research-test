@@ -693,12 +693,12 @@
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
 <script>
 const firebaseConfig = {
-  apiKey: "AIzaSyD0kcqbTgj1xrtShKdZbo7qP6gJ6ksguPc",
-  authDomain: "research-assessment-system.firebaseapp.com",
-  projectId: "research-assessment-system",
-  storageBucket: "research-assessment-system.firebasestorage.app",
-  messagingSenderId: "1073316526685",
-  appId: "1:1073316526685:web:91b4d9b2d570cfcaf0ebb4"
+  apiKey: "AIzaSyDAeDb-YgSJRzHdIdQcqjQXFNI1OMByEyY",
+  authDomain: "ksp-research-test.firebaseapp.com",
+  projectId: "ksp-research-test",
+  storageBucket: "ksp-research-test.firebasestorage.app",
+  messagingSenderId: "785664317330",
+  appId: "1:785664317330:web:527dac848e71620a08134b"
 };
 firebase.initializeApp(firebaseConfig);
 const fsDb = firebase.firestore();
@@ -860,21 +860,21 @@ function confirmLeaveNotesIfDirty(proceedFn){
 async function logAudit(groupId, action, detail){
   try{
     const who = (authUser && displayNameForEmail(authUser.email)) || (lockedJudge ? judgeLabel(lockedJudge) : (previewJudge ? `${judgeLabel(previewJudge)} (พรีวิว)` : 'ไม่ทราบผู้ใช้'));
-    const r = await storage.get(`auditLog:${groupId}`, true);
+    const r = await storage.get(`regional:auditLog:${groupId}`, true);
     let log = r ? JSON.parse(r.value) : [];
     log.push({ action, detail, by: who, at: Date.now() });
     if(log.length > 300) log = log.slice(log.length - 300);
-    await storage.set(`auditLog:${groupId}`, JSON.stringify(log), true);
+    await storage.set(`regional:auditLog:${groupId}`, JSON.stringify(log), true);
   }catch(e){ /* audit logging must never block the real action */ }
 }
 async function loadAuditLogFor(groupId){
   try{
-    const r = await storage.get(`auditLog:${groupId}`, true);
+    const r = await storage.get(`regional:auditLog:${groupId}`, true);
     return r ? JSON.parse(r.value) : [];
   }catch(e){ return []; }
 }
 async function saveAuditLogFor(groupId, log){
-  await storage.set(`auditLog:${groupId}`, JSON.stringify(log), true);
+  await storage.set(`regional:auditLog:${groupId}`, JSON.stringify(log), true);
 }
 let openDetailWorkId = null;
 let homeSection = null;
@@ -1351,45 +1351,45 @@ function trimCanvasToDataURL(canvasId, padding){
 /* ---------- storage ---------- */
 async function loadGroups(){
   try{
-    const r = await storage.get('groups', true);
+    const r = await storage.get('regional:groups', true);
     groups = r ? JSON.parse(r.value) : [];
   }catch(e){ groups = []; }
 }
 async function saveGroups(){
-  await storage.set('groups', JSON.stringify(groups), true);
+  await storage.set('regional:groups', JSON.stringify(groups), true);
 }
 async function loadVisitors(){
   try{
-    const r = await storage.get('visitors', true);
+    const r = await storage.get('regional:visitors', true);
     visitors = r ? JSON.parse(r.value) : [];
   }catch(e){ visitors = []; }
 }
 async function saveVisitors(){
-  await storage.set('visitors', JSON.stringify(visitors), true);
+  await storage.set('regional:visitors', JSON.stringify(visitors), true);
 }
 function isVisitorUser(){
   return !!(authUser && visitors.some(v=>v.email.toLowerCase() === authUser.email.toLowerCase()));
 }
 async function loadSuperAdmins(){
   try{
-    const r = await storage.get('superadmins', true);
+    const r = await storage.get('regional:superadmins', true);
     superAdmins = r ? JSON.parse(r.value) : [];
   }catch(e){ superAdmins = []; }
 }
 async function saveSuperAdmins(){
-  await storage.set('superadmins', JSON.stringify(superAdmins), true);
+  await storage.set('regional:superadmins', JSON.stringify(superAdmins), true);
 }
 /* username -> email lookup, used so people can log in with a username instead of
    typing their email. Publicly readable (like groups/visitors) since it only maps
    a login handle to an email — no secrets — and must be readable before sign-in. */
 async function loadUsernameMap(){
   try{
-    const r = await storage.get('usernameMap', true);
+    const r = await storage.get('regional:usernameMap', true);
     usernameMap = r ? JSON.parse(r.value) : {};
   }catch(e){ usernameMap = {}; }
 }
 async function saveUsernameMap(){
-  await storage.set('usernameMap', JSON.stringify(usernameMap), true);
+  await storage.set('regional:usernameMap', JSON.stringify(usernameMap), true);
 }
 /* Accepts either a username or a raw email (for accounts created before usernames
    existed, or typed directly by someone who prefers it). Returns the real email
@@ -1418,21 +1418,21 @@ function isSuperAdminUser(){
 }
 async function loadEvalYear(){
   try{
-    const r = await storage.get('evalYear', true);
+    const r = await storage.get('regional:evalYear', true);
     evalYear = r ? r.value : '';
   }catch(e){ evalYear = ''; }
 }
 async function saveEvalYear(){
-  await storage.set('evalYear', evalYear, true);
+  await storage.set('regional:evalYear', evalYear, true);
 }
 async function loadJudgeNamesFor(groupId){
   try{
-    const r = await storage.get(`judgeNames:${groupId}`, true);
+    const r = await storage.get(`regional:judgeNames:${groupId}`, true);
     return r ? { 1:'',2:'',3:'', ...JSON.parse(r.value) } : { 1:'',2:'',3:'' };
   }catch(e){ return { 1:'',2:'',3:'' }; }
 }
 async function saveJudgeNamesFor(groupId, names){
-  await storage.set(`judgeNames:${groupId}`, JSON.stringify(names), true);
+  await storage.set(`regional:judgeNames:${groupId}`, JSON.stringify(names), true);
 }
 /* PIN gate for judges opening their link directly (no login). Kept separate from
    judgeNames since it's a security control, not just display info. An empty PIN
@@ -1449,12 +1449,12 @@ function generatePin(){
 }
 async function loadJudgePinsFor(groupId){
   try{
-    const r = await storage.get(`judgePins:${groupId}`, true);
+    const r = await storage.get(`regional:judgePins:${groupId}`, true);
     return r ? { 1:'',2:'',3:'', ...JSON.parse(r.value) } : { 1:'',2:'',3:'' };
   }catch(e){ return { 1:'',2:'',3:'' }; }
 }
 async function saveJudgePinsFor(groupId, pins){
-  await storage.set(`judgePins:${groupId}`, JSON.stringify(pins), true);
+  await storage.set(`regional:judgePins:${groupId}`, JSON.stringify(pins), true);
 }
 function isPinVerified(groupId, judge){
   try{ return sessionStorage.getItem(`pinOK:${groupId}:${judge}`) === '1'; }catch(e){ return false; }
@@ -1473,7 +1473,7 @@ async function loadJudgeSignaturesFor(groupId){
   const result = { 1:null, 2:null, 3:null };
   const perJudge = await Promise.all(JUDGES.map(async j=>{
     try{
-      const r = await storage.get(`judgeSignatures:${groupId}:${j}`, true);
+      const r = await storage.get(`regional:judgeSignatures:${groupId}:${j}`, true);
       return r ? JSON.parse(r.value) : null;
     }catch(e){ return null; }
   }));
@@ -1492,50 +1492,50 @@ async function loadJudgeSignaturesFor(groupId){
   return result;
 }
 async function saveJudgeSignatureFor(groupId, judge, sigData){
-  await storage.set(`judgeSignatures:${groupId}:${judge}`, JSON.stringify(sigData), true);
+  await storage.set(`regional:judgeSignatures:${groupId}:${judge}`, JSON.stringify(sigData), true);
 }
 async function saveJudgeSignaturesFor(groupId, sigs){
   // Bulk helper kept for admin actions that legitimately touch all 3 slots at
   // once (backup restore, "reset all signatures") — safe there because those
   // are single-admin actions, not concurrent judges. Still writes per-judge
   // documents underneath, never the old combined document.
-  await Promise.all(JUDGES.map(j => storage.set(`judgeSignatures:${groupId}:${j}`, JSON.stringify(sigs[j]||null), true)));
+  await Promise.all(JUDGES.map(j => storage.set(`regional:judgeSignatures:${groupId}:${j}`, JSON.stringify(sigs[j]||null), true)));
 }
 async function loadCertifyApprovedFor(groupId){
   try{
-    const r = await storage.get(`certifyApproved:${groupId}`, true);
+    const r = await storage.get(`regional:certifyApproved:${groupId}`, true);
     return r ? JSON.parse(r.value) === true : false;
   }catch(e){ return false; }
 }
 async function saveCertifyApprovedFor(groupId, val){
-  await storage.set(`certifyApproved:${groupId}`, JSON.stringify(!!val), true);
+  await storage.set(`regional:certifyApproved:${groupId}`, JSON.stringify(!!val), true);
 }
 async function loadWorksFor(groupId){
   try{
-    const r = await storage.get(`works:${groupId}`, true);
+    const r = await storage.get(`regional:works:${groupId}`, true);
     return r ? JSON.parse(r.value) : [];
   }catch(e){ return []; }
 }
 async function saveWorksFor(groupId, works){
-  await storage.set(`works:${groupId}`, JSON.stringify(works), true);
+  await storage.set(`regional:works:${groupId}`, JSON.stringify(works), true);
 }
 async function loadScore(workId, judge){
   try{
-    const r = await storage.get(`score:${workId}:${judge}`, true);
+    const r = await storage.get(`regional:score:${workId}:${judge}`, true);
     return r ? JSON.parse(r.value) : null;
   }catch(e){ return null; }
 }
 async function saveScore(workId, judge, data){
-  await storage.set(`score:${workId}:${judge}`, JSON.stringify(data), true);
+  await storage.set(`regional:score:${workId}:${judge}`, JSON.stringify(data), true);
 }
 async function loadNotes(workId, judge){
   try{
-    const r = await storage.get(`notes:${workId}:${judge}`, true);
+    const r = await storage.get(`regional:notes:${workId}:${judge}`, true);
     return r ? JSON.parse(r.value) : null;
   }catch(e){ return null; }
 }
 async function saveNotes(workId, judge, data){
-  await storage.set(`notes:${workId}:${judge}`, JSON.stringify(data), true);
+  await storage.set(`regional:notes:${workId}:${judge}`, JSON.stringify(data), true);
 }
 async function loadAllNotesFor(workId){
   const results = {};
@@ -1544,7 +1544,7 @@ async function loadAllNotesFor(workId){
 }
 async function resetScoresForWork(workId){
   for(const j of JUDGES){
-    try{ await storage.delete(`score:${workId}:${j}`, true); }catch(e){ /* ignore if already absent */ }
+    try{ await storage.delete(`regional:score:${workId}:${j}`, true); }catch(e){ /* ignore if already absent */ }
   }
 }
 async function loadAllScoresFor(workId){
@@ -1556,22 +1556,22 @@ async function loadAllScoresFor(workId){
 /* ---------- Google Sheets sync (via Apps Script Web App webhook) ---------- */
 async function loadSheetsUrlFor(groupId){
   try{
-    const r = await storage.get(`sheetsUrl:${groupId}`, true);
+    const r = await storage.get(`regional:sheetsUrl:${groupId}`, true);
     return r ? r.value : '';
   }catch(e){ return ''; }
 }
 async function saveSheetsUrlFor(groupId, url){
-  await storage.set(`sheetsUrl:${groupId}`, url, true);
+  await storage.set(`regional:sheetsUrl:${groupId}`, url, true);
 }
 /* ---------- Single shared document link for all works in a group ---------- */
 async function loadGroupDocLinkFor(groupId){
   try{
-    const r = await storage.get(`groupDocLink:${groupId}`, true);
+    const r = await storage.get(`regional:groupDocLink:${groupId}`, true);
     return r ? r.value : '';
   }catch(e){ return ''; }
 }
 async function saveGroupDocLinkFor(groupId, url){
-  await storage.set(`groupDocLink:${groupId}`, url, true);
+  await storage.set(`regional:groupDocLink:${groupId}`, url, true);
 }
 async function pushRowsToSheets(groupId, sheetName, headers, dataRows){
   const url = await loadSheetsUrlFor(groupId);

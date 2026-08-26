@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ระบบประเมินคุณภาพผลงานวิจัยของคุรุสภา</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Mali:wght@400;500;600;700&family=Noto+Serif+Thai:wght@500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
+<style>
+:root{
+  --bg:#F7F9FC;
+  --card:#FFFFFF;
+  --blue:#1B4B91;
+  --blue-2:#2E6BB8;
+  --orange:#E8722C;
+  --orange-light:#FCE6D3;
+  --green:#3F7857;
+  --green-bg:#E7F1EA;
+  --red:#B5473A;
+  --red-bg:#FBEAE7;
+  --text:#24272E;
+  --muted:#767A82;
+  --border:#E1E6EE;
+  --teal:#0F766E;
+  --teal-bg:#E3F4F1;
+  --purple:#6D28D9;
+  --purple-bg:#F0E9FE;
+  --slate:#475569;
+  --slate-bg:#EEF1F4;
+}
+*{box-sizing:border-box;}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font-family:'Mali','Noto Sans Thai','Noto Sans',sans-serif;
+  min-height:100vh;
+}
+.wrap{max-width:760px;margin:0 auto;padding:0 20px 60px;}
+.topbar{display:flex;justify-content:flex-end;align-items:center;gap:14px;padding:16px 20px;font-size:13px;color:var(--muted);}
+.topbar .who{background:var(--card);border:1px solid var(--border);border-radius:20px;padding:6px 14px;}
+.topbar a{color:var(--blue-2);text-decoration:underline;cursor:pointer;}
+.hero{
+  background:linear-gradient(135deg,var(--blue) 0%,var(--blue-2) 100%);
+  border-radius:18px;padding:36px 30px;color:#fff;text-align:center;margin-bottom:28px;
+}
+.hero img{width:56px;height:56px;border-radius:14px;background:#fff;padding:6px;margin-bottom:10px;}
+.hero h1{font-family:'Mali','Noto Serif Thai',serif;font-size:24px;margin:6px 0 4px;font-weight:700;}
+.hero p{margin:0;font-size:14px;opacity:.92;}
+
+.card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:28px 24px;}
+.login-card{max-width:400px;margin:0 auto;}
+.login-card h2{font-size:18px;margin:0 0 18px;text-align:center;}
+label{display:block;font-size:13px;color:var(--muted);margin:14px 0 6px;}
+input[type=text],input[type=email],input[type=password]{
+  width:100%;padding:11px 13px;border:1px solid var(--border);border-radius:10px;
+  font-family:inherit;font-size:15px;background:#FAFBFD;
+}
+input:focus{outline:2px solid var(--blue-2);outline-offset:1px;}
+.btn{
+  width:100%;margin-top:18px;padding:12px;border:none;border-radius:10px;
+  background:var(--blue);color:#fff;font-family:inherit;font-size:15px;font-weight:600;
+  cursor:pointer;
+}
+.btn:hover{background:var(--blue-2);}
+.btn:disabled{opacity:.5;cursor:not-allowed;}
+.btn-outline{background:#fff;color:var(--blue);border:1px solid var(--blue);}
+.btn-ghost{background:transparent;color:var(--muted);border:1px solid var(--border);}
+.err{background:var(--red-bg);color:var(--red);border-radius:10px;padding:10px 13px;font-size:13.5px;margin-top:14px;}
+.info{background:var(--orange-light);color:#8A4A18;border-radius:10px;padding:12px 14px;font-size:13.5px;margin:16px 0;}
+
+.icon-menu{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+@media(max-width:480px){.icon-menu{grid-template-columns:1fr;}}
+.icon-tile{
+  background:var(--card);border:1px solid var(--border);border-radius:16px;
+  padding:30px 16px;text-align:center;cursor:pointer;transition:transform .12s,box-shadow .12s;
+  text-decoration:none;color:inherit;display:block;
+}
+.icon-tile:hover{transform:translateY(-3px);box-shadow:0 8px 20px rgba(27,75,145,.10);}
+.icon-tile.full{grid-column:1/-1;}
+.icon-circle{
+  width:64px;height:64px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  margin:0 auto 14px;
+}
+.icon-circle svg{width:28px;height:28px;}
+.icon-tile h3{margin:0;font-size:16px;font-weight:600;}
+.icon-tile p{margin:6px 0 0;font-size:12.5px;color:var(--muted);}
+
+.section-title{font-size:15px;font-weight:700;margin:26px 0 12px;color:var(--text);}
+.toast{font-size:13.5px;margin-top:10px;}
+.admin-row{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--border);gap:10px;flex-wrap:wrap;}
+.admin-row:last-child{border-bottom:none;}
+.admin-row .em{font-size:13px;color:var(--muted);}
+.chk-group{display:flex;gap:14px;font-size:13px;align-items:center;}
+.chk-group label{display:flex;align-items:center;gap:5px;margin:0;color:var(--text);font-size:13px;}
+.back-link{display:inline-block;margin-bottom:16px;color:var(--blue-2);text-decoration:none;font-size:14px;cursor:pointer;}
+.back-link:hover{text-decoration:underline;}
+</style>
+</head>
+<body>
+<div class="topbar" id="topbar" style="display:none;">
+  <span class="who" id="whoSpan"></span>
+  <a id="logoutLink">ออกจากระบบ</a>
+</div>
+<div class="wrap">
+  <div class="hero">
+    <img src="https://www.ksp.or.th/ksp2018/wp-content/uploads/2019/03/logo-ksp.png" onerror="this.style.display='none'">
+    <h1>ระบบประเมินคุณภาพผลงานวิจัยของคุรุสภา</h1>
+    <p>สำนักงานเลขาธิการคุรุสภา สำนักพัฒนาและส่งเสริมวิชาชีพ</p>
+  </div>
+  <div id="root"></div>
+</div>
+
+<script>
+/* ===================== ปรับได้: ลิงก์ปลายทางของแต่ละระบบ ===================== */
+const REGIONAL_URL = "https://ajsunti-beep.github.io/khurusapha-research-test/";
+const NATIONAL_URL = "https://ajsunti-beep.github.io/test-scoring-app/";
+
+/* ===================== Firebase (ksp-research-test) ===================== */
+const firebaseConfig = {
+  apiKey: "AIzaSyDAeDb-YgSJRzHdIdQcqjQXFNI1OMByEyY",
+  authDomain: "ksp-research-test.firebaseapp.com",
+  projectId: "ksp-research-test",
+  storageBucket: "ksp-research-test.firebasestorage.app",
+  messagingSenderId: "785664317330",
+  appId: "1:785664317330:web:527dac848e71620a08134b"
+};
+firebase.initializeApp(firebaseConfig);
+const fsDb = firebase.firestore();
+const fsAuth = firebase.auth();
+
+/* ===================== kvstore helpers (landing: prefix) ===================== */
+async function kvGet(key){
+  const snap = await fsDb.collection('kvstore').doc(key).get();
+  return snap.exists ? snap.data() : null;
+}
+async function kvSet(key, value){
+  await fsDb.collection('kvstore').doc(key).set({ value: value, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+}
+
+async function loadLandingSuperAdmins(){
+  try{ const r = await kvGet('landing:superadmins'); return r ? JSON.parse(r.value) : []; }
+  catch(e){ return []; }
+}
+async function saveLandingSuperAdmins(arr){ await kvSet('landing:superadmins', JSON.stringify(arr)); }
+
+async function loadLandingPermissions(){
+  try{ const r = await kvGet('landing:permissions'); return r ? JSON.parse(r.value) : {}; }
+  catch(e){ return {}; }
+}
+async function saveLandingPermissions(obj){ await kvSet('landing:permissions', JSON.stringify(obj)); }
+
+/* ===================== state ===================== */
+let superAdmins = [];
+let permissions = {};
+let currentUser = null;
+
+function isSuperAdmin(email){
+  if(!email) return false;
+  if(superAdmins.length===0) return true; // bootstrap: no superadmin set yet
+  return superAdmins.some(e=>e.toLowerCase()===email.toLowerCase());
+}
+
+const root = document.getElementById('root');
+const topbar = document.getElementById('topbar');
+const whoSpan = document.getElementById('whoSpan');
+document.getElementById('logoutLink').onclick = async ()=>{ await fsAuth.signOut(); };
+
+/* ===================== icons ===================== */
+const ICON_MAPPIN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>';
+const ICON_AWARD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="6"/><path d="M15.5 13.5L17 22l-5-3-5 3 1.5-8.5"/></svg>';
+const ICON_SHIELD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><rect x="9" y="11" width="6" height="5" rx="1"/><path d="M12 11V9"/></svg>';
+const ICON_USERPLUS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="8.5" cy="7" r="4"/><path d="M20 8v6M23 11h-6"/></svg>';
+
+/* ===================== render: login ===================== */
+function renderLogin(){
+  topbar.style.display = 'none';
+  root.innerHTML = `
+    <div class="card login-card">
+      <h2>เข้าสู่ระบบ</h2>
+      <label>อีเมล</label>
+      <input type="email" id="loginEmail" placeholder="name@example.com">
+      <label>รหัสผ่าน</label>
+      <input type="password" id="loginPass" placeholder="รหัสผ่าน">
+      <button class="btn" id="loginBtn">เข้าสู่ระบบ</button>
+      <div class="err" id="loginErr" style="display:none;"></div>
+    </div>
+  `;
+  document.getElementById('loginBtn').onclick = async ()=>{
+    const email = document.getElementById('loginEmail').value.trim();
+    const pass = document.getElementById('loginPass').value;
+    const errEl = document.getElementById('loginErr');
+    errEl.style.display = 'none';
+    if(!email || !pass){
+      errEl.textContent = 'กรุณากรอกอีเมลและรหัสผ่าน';
+      errEl.style.display = 'block';
+      return;
+    }
+    const btn = document.getElementById('loginBtn');
+    btn.disabled = true; btn.textContent = 'กำลังเข้าสู่ระบบ...';
+    try{
+      await fsAuth.signInWithEmailAndPassword(email, pass);
+      // onAuthStateChanged จะจัดการ render ต่อเอง
+    }catch(err){
+      errEl.textContent = 'เข้าสู่ระบบไม่สำเร็จ กรุณาตรวจสอบอีเมลและรหัสผ่าน';
+      errEl.style.display = 'block';
+      btn.disabled = false; btn.textContent = 'เข้าสู่ระบบ';
+    }
+  };
+}
+
+/* ===================== render: card menu ===================== */
+function renderMenu(){
+  topbar.style.display = 'flex';
+  whoSpan.textContent = 'ผู้ใช้: ' + currentUser.email;
+
+  const myPerm = permissions[currentUser.email.toLowerCase()] || { regional:false, national:false };
+  const amSuper = isSuperAdmin(currentUser.email);
+
+  const cards = [];
+  if(myPerm.regional){
+    cards.push(`
+      <a class="icon-tile" href="${REGIONAL_URL}">
+        <div class="icon-circle" style="background:var(--teal-bg);color:var(--teal);">${ICON_MAPPIN}</div>
+        <h3>การประเมินผลงานวิจัย</h3>
+        <p>ระดับภูมิภาค</p>
+      </a>`);
+  }
+  if(myPerm.national){
+    cards.push(`
+      <a class="icon-tile" href="${NATIONAL_URL}">
+        <div class="icon-circle" style="background:var(--purple-bg);color:var(--purple);">${ICON_AWARD}</div>
+        <h3>การประเมินผลงานวิจัย</h3>
+        <p>ระดับประเทศ</p>
+      </a>`);
+  }
+  if(amSuper){
+    cards.push(`
+      <div class="icon-tile full" id="goAdmin">
+        <div class="icon-circle" style="background:var(--slate-bg);color:var(--slate);">${ICON_SHIELD}</div>
+        <h3>การดูแลระบบ</h3>
+        <p>จัดการผู้ดูแลระบบและสิทธิ์การเข้าถึง</p>
+      </div>`);
+  }
+
+  if(cards.length===0){
+    root.innerHTML = `
+      <div class="card" style="text-align:center;">
+        <div class="info" style="margin:0;">ยังไม่ได้รับสิทธิ์เข้าใช้งานระบบใด กรุณาติดต่อผู้ดูแลระบบเพื่อขอสิทธิ์</div>
+      </div>`;
+    return;
+  }
+
+  root.innerHTML = `<div class="icon-menu">${cards.join('')}</div>`;
+  const adminTile = document.getElementById('goAdmin');
+  if(adminTile) adminTile.onclick = renderAdminPanel;
+}
+
+/* ===================== render: admin panel ===================== */
+async function renderAdminPanel(){
+  root.innerHTML = `
+    <a class="back-link" id="backLink">← กลับ</a>
+    <div class="card">
+      <div class="section-title" style="margin-top:0;">เพิ่มผู้ดูแลระบบใหม่</div>
+      <label>อีเมล (ใช้สำหรับล็อกอิน)</label>
+      <input type="email" id="newEmail" placeholder="name@example.com">
+      <label>รหัสผ่านชั่วคราว</label>
+      <input type="password" id="newPass" placeholder="อย่างน้อย 6 ตัวอักษร">
+      <div class="chk-group" style="margin-top:14px;">
+        <label><input type="checkbox" id="permRegional"> เห็นระบบภูมิภาค</label>
+        <label><input type="checkbox" id="permNational"> เห็นระบบประเทศ</label>
+      </div>
+      <button class="btn" id="addAdminBtn">เพิ่มผู้ดูแลระบบ</button>
+      <div class="toast" id="addAdminToast"></div>
+    </div>
+
+    <div class="section-title">ผู้ดูแลระบบทั้งหมด</div>
+    <div class="card" id="adminListCard"><div class="toast">กำลังโหลด...</div></div>
+
+    <div class="section-title">สิทธิ์ "การดูแลระบบ" (ซูเปอร์แอดมิน)</div>
+    <div class="card">
+      <div class="info" style="margin-top:0;">${superAdmins.length===0 ? 'ยังไม่ได้กำหนดซูเปอร์แอดมิน ผู้ดูแลระบบทุกคนเข้าหน้านี้ได้ชั่วคราว จนกว่าจะเพิ่มรายชื่อแรกด้านล่าง' : ''}</div>
+      <label>อีเมลที่จะให้สิทธิ์ซูเปอร์แอดมิน</label>
+      <input type="email" id="newSuperEmail" placeholder="name@example.com">
+      <button class="btn btn-outline" id="addSuperBtn">เพิ่มสิทธิ์</button>
+      <div class="toast" id="addSuperToast"></div>
+      <div id="superList" style="margin-top:14px;"></div>
+    </div>
+  `;
+  document.getElementById('backLink').onclick = renderMenu;
+  renderAdminList();
+  renderSuperList();
+
+  document.getElementById('addAdminBtn').onclick = async ()=>{
+    const email = document.getElementById('newEmail').value.trim();
+    const pass = document.getElementById('newPass').value;
+    const wantRegional = document.getElementById('permRegional').checked;
+    const wantNational = document.getElementById('permNational').checked;
+    const toast = document.getElementById('addAdminToast');
+    const btn = document.getElementById('addAdminBtn');
+    if(!email || !pass){ toast.style.color='var(--red)'; toast.textContent='กรุณากรอกอีเมลและรหัสผ่าน'; return; }
+    if(pass.length<6){ toast.style.color='var(--red)'; toast.textContent='รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร'; return; }
+    if(!wantRegional && !wantNational){ toast.style.color='var(--red)'; toast.textContent='กรุณาเลือกอย่างน้อย 1 ระบบที่ให้สิทธิ์เข้าถึง'; return; }
+    btn.disabled = true; btn.textContent = 'กำลังเพิ่ม...';
+    let secondaryApp = null;
+    try{
+      secondaryApp = firebase.initializeApp(firebaseConfig, 'adminCreate_' + Date.now());
+      await secondaryApp.auth().createUserWithEmailAndPassword(email, pass);
+      await secondaryApp.auth().signOut();
+      permissions[email.toLowerCase()] = { regional: wantRegional, national: wantNational };
+      await saveLandingPermissions(permissions);
+      toast.style.color = 'var(--green)';
+      toast.textContent = `เพิ่มผู้ดูแลระบบ ${email} สำเร็จแล้ว แจ้งรหัสผ่านนี้ให้ผู้ใช้ไปเปลี่ยนเองภายหลัง`;
+      document.getElementById('newEmail').value='';
+      document.getElementById('newPass').value='';
+      document.getElementById('permRegional').checked=false;
+      document.getElementById('permNational').checked=false;
+      renderAdminList();
+    }catch(err){
+      toast.style.color = 'var(--red)';
+      if(err && err.code==='auth/email-already-in-use') toast.textContent = 'อีเมลนี้มีบัญชีอยู่แล้ว (ถ้าต้องการแก้สิทธิ์ ดูในรายชื่อด้านล่าง)';
+      else toast.textContent = 'เพิ่มผู้ดูแลระบบไม่สำเร็จ กรุณาลองใหม่';
+    }
+    if(secondaryApp){ try{ await secondaryApp.delete(); }catch(e){} }
+    btn.disabled = false; btn.textContent = 'เพิ่มผู้ดูแลระบบ';
+  };
+
+  document.getElementById('addSuperBtn').onclick = async ()=>{
+    const email = document.getElementById('newSuperEmail').value.trim();
+    const toast = document.getElementById('addSuperToast');
+    if(!email){ toast.style.color='var(--red)'; toast.textContent='กรุณากรอกอีเมล'; return; }
+    if(superAdmins.some(e=>e.toLowerCase()===email.toLowerCase())){
+      toast.style.color='var(--red)'; toast.textContent='อีเมลนี้มีสิทธิ์อยู่แล้ว'; return;
+    }
+    superAdmins.push(email);
+    await saveLandingSuperAdmins(superAdmins);
+    toast.style.color='var(--green)'; toast.textContent=`เพิ่มสิทธิ์ให้ ${email} แล้ว`;
+    document.getElementById('newSuperEmail').value='';
+    renderSuperList();
+    renderAdminPanel(); // รีเฟรชข้อความ bootstrap ด้านบนถ้าเปลี่ยนสถานะ
+  };
+}
+
+function renderAdminList(){
+  const el = document.getElementById('adminListCard');
+  const emails = Object.keys(permissions);
+  if(emails.length===0){ el.innerHTML = '<div class="toast" style="color:var(--muted);">ยังไม่มีผู้ดูแลระบบ</div>'; return; }
+  el.innerHTML = emails.map(email=>{
+    const p = permissions[email];
+    return `
+      <div class="admin-row">
+        <div>
+          <div>${email}</div>
+        </div>
+        <div class="chk-group">
+          <label><input type="checkbox" data-email="${email}" data-field="regional" ${p.regional?'checked':''}> ภูมิภาค</label>
+          <label><input type="checkbox" data-email="${email}" data-field="national" ${p.national?'checked':''}> ประเทศ</label>
+        </div>
+      </div>`;
+  }).join('');
+  el.querySelectorAll('input[type=checkbox]').forEach(cb=>{
+    cb.onchange = async ()=>{
+      const email = cb.dataset.email, field = cb.dataset.field;
+      permissions[email][field] = cb.checked;
+      await saveLandingPermissions(permissions);
+    };
+  });
+}
+
+function renderSuperList(){
+  const el = document.getElementById('superList');
+  if(superAdmins.length===0){ el.innerHTML=''; return; }
+  el.innerHTML = superAdmins.map(email=>`
+    <div class="admin-row">
+      <div class="em">${email}</div>
+      <a class="back-link" style="margin:0;color:var(--red);" data-email="${email}">ถอดสิทธิ์</a>
+    </div>`).join('');
+  el.querySelectorAll('a[data-email]').forEach(a=>{
+    a.onclick = async ()=>{
+      superAdmins = superAdmins.filter(e=>e.toLowerCase()!==a.dataset.email.toLowerCase());
+      await saveLandingSuperAdmins(superAdmins);
+      renderSuperList();
+      renderAdminPanel();
+    };
+  });
+}
+
+/* ===================== auth state ===================== */
+fsAuth.onAuthStateChanged(async (user)=>{
+  if(!user){
+    currentUser = null;
+    renderLogin();
+    return;
+  }
+  currentUser = user;
+  root.innerHTML = '<div class="card" style="text-align:center;">กำลังโหลด...</div>';
+  [superAdmins, permissions] = await Promise.all([loadLandingSuperAdmins(), loadLandingPermissions()]);
+  renderMenu();
+});
+</script>
+</body>
+</html>

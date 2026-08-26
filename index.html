@@ -797,6 +797,7 @@ let scoreJudge = 1;
 let scoreWorkId = null;
 let scoreLevels = {};
 let lastSavedScoreLevels = null;
+let formLoadedSavedAt = null;
 let lastSavedNotes = null;
 /* Tracks whether the score form has unsaved picks — used to warn before the
    picks get lost silently (closing the tab, or tapping a back link) since the
@@ -1539,17 +1540,19 @@ async function saveNotes(workId, judge, data){
 }
 async function loadAllNotesFor(workId){
   const results = {};
-  for(const j of JUDGES){ results[j] = await loadNotes(workId, j); }
+  const pairs = await Promise.all(JUDGES.map(async j => [j, await loadNotes(workId, j)]));
+  pairs.forEach(([j, v]) => { results[j] = v; });
   return results;
 }
 async function resetScoresForWork(workId){
-  for(const j of JUDGES){
+  await Promise.all(JUDGES.map(async j => {
     try{ await storage.delete(`regional:score:${workId}:${j}`, true); }catch(e){ /* ignore if already absent */ }
-  }
+  }));
 }
 async function loadAllScoresFor(workId){
   const results = {};
-  for(const j of JUDGES){ results[j] = await loadScore(workId, j); }
+  const pairs = await Promise.all(JUDGES.map(async j => [j, await loadScore(workId, j)]));
+  pairs.forEach(([j, v]) => { results[j] = v; });
   return results;
 }
 
@@ -1627,32 +1630,35 @@ function buildNotesRow(groupName, work, judgeName, notes){
   ];
 }
 async function gatherAllScoreAndSummaryRows(){
-  const scoreRows = [];
-  const summaryRows = [];
-  for(const w of ctxWorks){
+  const perWork = await Promise.all(ctxWorks.map(async w => {
     const scores = await loadAllScoresFor(w.id);
+    const wScoreRows = [];
     JUDGES.forEach(j=>{
       if(scores[j] && isComplete(scores[j].levels)){
-        scoreRows.push(buildScoreRow(ctxGroupName, w, judgeLabel(j), scores[j].levels));
+        wScoreRows.push(buildScoreRow(ctxGroupName, w, judgeLabel(j), scores[j].levels));
       }
     });
     const result = computeWorkResult(scores);
     const grade = nationalGrade(computeNationalTotal(w, result));
-    summaryRows.push(buildSummaryRow(ctxGroupName, w, result, grade));
-  }
+    const wSummaryRow = buildSummaryRow(ctxGroupName, w, result, grade);
+    return { wScoreRows, wSummaryRow };
+  }));
+  const scoreRows = perWork.flatMap(p => p.wScoreRows);
+  const summaryRows = perWork.map(p => p.wSummaryRow);
   return { scoreRows, summaryRows };
 }
 async function gatherAllNotesRows(){
-  const notesRows = [];
-  for(const w of ctxWorks){
+  const perWork = await Promise.all(ctxWorks.map(async w => {
     const notes = await loadAllNotesFor(w.id);
+    const wNotesRows = [];
     JUDGES.forEach(j=>{
       if(notes[j] && ((notes[j].highlights && notes[j].highlights.trim()) || (notes[j].improvements && notes[j].improvements.trim()))){
-        notesRows.push(buildNotesRow(ctxGroupName, w, judgeLabel(j), notes[j]));
+        wNotesRows.push(buildNotesRow(ctxGroupName, w, judgeLabel(j), notes[j]));
       }
     });
-  }
-  return notesRows;
+    return wNotesRows;
+  }));
+  return perWork.flat();
 }
 function csvEscapeCell(v){
   const s = v===null || v===undefined ? '' : String(v);
@@ -1707,23 +1713,29 @@ function isComplete(levels){
   return true;
 }
 function computeWorkResult(scores){
-  const allDone = JUDGES.every(j=>scores[j] && isComplete(scores[j].levels));
+  // A work is "resolved" per-indicator as soon as a majority level exists among
+  // whichever judges have scored so far -- i.e. 2 of 3 judges agreeing is already
+  // final, since a 3rd vote can never overturn a 2-vote majority. This lets scores
+  // finalize even if one judge is unable to complete their duty.
   const doneCount = JUDGES.filter(j=>scores[j] && isComplete(scores[j].levels)).length;
-  if(!allDone){
-    return { allDone:false, doneCount, indicators:[], conflicts:[], total:null };
-  }
+  const allDone = doneCount === JUDGES.length;
   const indicators = [];
   const conflicts = [];
   RUBRIC.forEach(dim=>{
     dim.indicators.forEach(ind=>{
-      const judgeLevels = JUDGES.map(j=>scores[j].levels[ind.id]);
-      const mode = modeOf(judgeLevels);
-      if(mode===null) conflicts.push(ind.id);
-      indicators.push({ id:ind.id, name:ind.name, dimName:dim.name, weight:ind.weight, judgeLevels, mode, score: mode!==null ? mode*ind.weight : null });
+      const judgeLevels = JUDGES.map(j=> (scores[j] && scores[j].levels[ind.id]) ? scores[j].levels[ind.id] : null);
+      const nonNull = judgeLevels.filter(v=>v!=null);
+      const mode = nonNull.length>=2 ? modeOf(nonNull) : null;
+      // "conflict" = all 3 judges have scored yet no majority exists (genuine tie, needs discussion)
+      const conflict = mode===null && nonNull.length===JUDGES.length;
+      if(conflict) conflicts.push(ind.id);
+      const score = mode!==null ? mode*ind.weight : null;
+      indicators.push({ id:ind.id, name:ind.name, dimName:dim.name, weight:ind.weight, judgeLevels, mode, score, conflict });
     });
   });
-  const total = conflicts.length===0 ? Math.round(indicators.reduce((s,i)=>s+i.score,0)*100)/100 : null;
-  return { allDone:true, doneCount, indicators, conflicts, total };
+  const resolved = indicators.every(ind=>ind.score!==null);
+  const total = resolved ? Math.round(indicators.reduce((s,i)=>s+i.score,0)*100)/100 : null;
+  return { allDone, doneCount, indicators, conflicts, total, resolved };
 }
 
 function computeNationalTotal(work, res){
@@ -1788,11 +1800,11 @@ function renderIdentityBadge(){
   } else if(previewJudge){
     badge.innerHTML = `<span>กำลังดูตัวอย่าง · ${escapeHtml(judgeLabel(previewJudge))}</span> <a href="#" id="exitPreviewLink">กลับสู่หน้าผู้ดูแลระบบ</a>`;
   } else if(authUser && isVisitorUser()){
-    badge.innerHTML = `<span>ผู้เยี่ยมชม: ${escapeHtml(displayNameForEmail(authUser.email))}</span> <a href="#" id="logoutLink">ออกจากระบบ</a>`;
+    badge.innerHTML = `<a href="landing.html" id="backToLandingLink">← หน้าหลัก</a> <span>ผู้เยี่ยมชม: ${escapeHtml(displayNameForEmail(authUser.email))}</span> <a href="#" id="logoutLink">ออกจากระบบ</a>`;
   } else if(adminSelectedGroupId && authUser){
-    badge.innerHTML = `<span>${escapeHtml(displayNameForEmail(authUser.email))} · กลุ่ม ${escapeHtml(ctxGroupName)}</span> <a href="#" id="logoutLink">ออกจากระบบ</a>`;
+    badge.innerHTML = `<a href="landing.html" id="backToLandingLink">← หน้าหลัก</a> <span>${escapeHtml(displayNameForEmail(authUser.email))} · กลุ่ม ${escapeHtml(ctxGroupName)}</span> <a href="#" id="logoutLink">ออกจากระบบ</a>`;
   } else if(authUser){
-    badge.innerHTML = `<span>ผู้ดูแลระบบ: ${escapeHtml(displayNameForEmail(authUser.email))}</span> <a href="#" id="logoutLink">ออกจากระบบ</a>`;
+    badge.innerHTML = `<a href="landing.html" id="backToLandingLink">← หน้าหลัก</a> <span>ผู้ดูแลระบบ: ${escapeHtml(displayNameForEmail(authUser.email))}</span> <a href="#" id="logoutLink">ออกจากระบบ</a>`;
   } else {
     badge.innerHTML = '';
   }
@@ -1823,13 +1835,23 @@ function renderLoginForm(prefillEmail){
       <input type="text" id="loginEmail" placeholder="เช่น admin1" autocomplete="username" value="${escapeHtml(prefillEmail||'')}">
       <div style="height:10px;"></div>
       <label class="field-label">รหัสผ่าน</label>
-      <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password">
+      <div style="position:relative;">
+        <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password" style="padding-right:64px;">
+        <button type="button" id="toggleLoginPw" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--blue-2);font-size:12.5px;font-family:inherit;cursor:pointer;padding:4px 6px;">แสดง</button>
+      </div>
       <a href="#" class="login-forgot-link" id="forgotPasswordLink">ลืมรหัสผ่าน?</a>
       <div style="margin-top:16px;text-align:center;">
         <button class="btn btn-primary" id="loginBtn" style="width:100%;">เข้าสู่ระบบ</button>
       </div>
     </div>
   `;
+  const toggleLoginPw = document.getElementById('toggleLoginPw');
+  const loginPasswordInput = document.getElementById('loginPassword');
+  toggleLoginPw.onclick = ()=>{
+    const showing = loginPasswordInput.type === 'text';
+    loginPasswordInput.type = showing ? 'password' : 'text';
+    toggleLoginPw.textContent = showing ? 'แสดง' : 'ซ่อน';
+  };
   const doLogin = async ()=>{
     const rawInput = cleanInput(document.getElementById('loginEmail').value);
     const password = document.getElementById('loginPassword').value;
@@ -3335,16 +3357,18 @@ async function renderWorksList(){
   }
   wrap.innerHTML = `<div style="overflow-x:auto;"><table style="min-width:820px;"><thead><tr><th>รหัสผลงานวิจัย</th><th>ชื่อผลงานวิจัย</th><th>ชื่อผู้วิจัย</th><th>สถานะการให้คะแนน</th><th></th></tr></thead><tbody id="worksTbody"></tbody></table></div>`;
   const tbody = document.getElementById('worksTbody');
+  const scoresByWork = {};
+  await Promise.all(ctxWorks.map(async w => { scoresByWork[w.id] = await loadAllScoresFor(w.id); }));
   for(const w of ctxWorks){
-    const scores = await loadAllScoresFor(w.id);
+    const scores = scoresByWork[w.id];
     const res = computeWorkResult(scores);
     let statusHtml;
-    if(!res.allDone){
+    if(res.resolved){
+      statusHtml = `<span class="badge badge-done">${res.allDone ? 'ครบและสรุปได้แล้ว' : `สรุปผลได้แล้ว (${res.doneCount}/3 กรรมการ)`}</span>`;
+    } else if(!res.allDone){
       statusHtml = `<span class="badge badge-pending">${res.doneCount}/3 กรรมการ</span>`;
-    } else if(res.conflicts.length>0){
-      statusHtml = `<span class="badge badge-conflict"><span class="warn-icon" style="margin-right:4px;">!</span>ไม่มีฐานนิยม ${res.conflicts.length} รายการ</span>`;
     } else {
-      statusHtml = `<span class="badge badge-done">ครบและสรุปได้แล้ว</span>`;
+      statusHtml = `<span class="badge badge-conflict"><span class="warn-icon" style="margin-right:4px;">!</span>ไม่มีฐานนิยม ${res.conflicts.length} รายการ</span>`;
     }
     const tr = document.createElement('tr');
     tr.innerHTML = `
@@ -3674,6 +3698,7 @@ async function loadFormState(){
   const existing = await loadScore(scoreWorkId, scoreJudge);
   scoreLevels = existing ? {...existing.levels} : {};
   lastSavedScoreLevels = {...scoreLevels};
+  formLoadedSavedAt = existing ? (existing.savedAt || null) : null;
   renderRubricForm();
 }
 
@@ -3752,17 +3777,39 @@ function renderRubricForm(){
     const levelsSnapshot = {...scoreLevels};
     const original = btn.textContent;
     btn.disabled = true;
-    btn.textContent = 'กำลังบันทึก...';
+    btn.textContent = 'กำลังตรวจสอบ...';
     try{
       if(navigator.onLine === false){
         throw Object.assign(new Error('offline'), { code:'client/offline' });
       }
+      // ป้องกันคะแนนหาย: เช็คว่ามีการบันทึกจากอุปกรณ์/แท็บอื่นเข้ามาแทรกระหว่างที่เปิดฟอร์มนี้ค้างไว้หรือไม่
+      // ก่อนเขียนทับ (เช่น กรรมการคนเดียวกันเปิด 2 อุปกรณ์พร้อมกัน)
+      const latest = await withTimeout(loadScore(scoreWorkId, scoreJudge), 15000, 'ตรวจสอบข้อมูลล่าสุดใช้เวลานานเกินไป');
+      const latestSavedAt = latest ? (latest.savedAt || null) : null;
+      if(latestSavedAt !== formLoadedSavedAt){
+        const proceed = confirm(
+          `พบว่าคะแนนของ ${judgeLabel(scoreJudge)} สำหรับผลงานนี้ถูกบันทึกไปแล้วจากอุปกรณ์/แท็บอื่นระหว่างที่หน้านี้เปิดค้างไว้\n\n` +
+          `กด "ตกลง" เพื่อบันทึกทับด้วยคะแนนที่เลือกไว้ในหน้านี้\n` +
+          `กด "ยกเลิก" เพื่อโหลดคะแนนล่าสุดแทน (คะแนนที่เพิ่งเลือกไว้ในหน้านี้จะหายไป)`
+        );
+        if(!proceed){
+          btn.disabled = false;
+          btn.textContent = original;
+          toast.style.color = 'var(--muted)';
+          toast.textContent = 'กำลังโหลดคะแนนล่าสุด...';
+          await loadFormState();
+          return;
+        }
+      }
+      btn.textContent = 'กำลังบันทึก...';
+      const newSavedAt = new Date().toISOString();
       await withTimeout(
-        saveScore(scoreWorkId, scoreJudge, { levels: levelsSnapshot, total: computeTotal(levelsSnapshot), savedAt: new Date().toISOString() }),
+        saveScore(scoreWorkId, scoreJudge, { levels: levelsSnapshot, total: computeTotal(levelsSnapshot), savedAt: newSavedAt }),
         15000,
         'การบันทึกใช้เวลานานเกินไป'
       );
       lastSavedScoreLevels = levelsSnapshot;
+      formLoadedSavedAt = newSavedAt;
       toast.style.color = 'var(--green)';
       toast.textContent = `บันทึกคะแนนของ ${judgeLabel(scoreJudge)} เรียบร้อยแล้ว (รวม ${computeTotal(levelsSnapshot)} คะแนน)`;
       const workNow = ctxWorks.find(w=>w.id===scoreWorkId);
@@ -3795,14 +3842,13 @@ function updateLiveTotal(){
 async function computeReportRowsAndSigs(){
   const freshSignatures = await loadJudgeSignaturesFor(ctxGroupId);
   const freshCertifyApproved = await loadCertifyApprovedFor(ctxGroupId);
-  const rows = [];
-  for(const w of ctxWorks){
+  const rows = await Promise.all(ctxWorks.map(async w => {
     const scores = await loadAllScoresFor(w.id);
     const result = computeWorkResult(scores);
     const nationalTotal = computeNationalTotal(w, result);
     const grade = nationalGrade(nationalTotal);
-    rows.push({ work:w, scores, result, nationalTotal, grade });
-  }
+    return { work:w, scores, result, nationalTotal, grade };
+  }));
   rows.sort((a,b)=>{
     if(a.nationalTotal===null && b.nationalTotal===null) return 0;
     if(a.nationalTotal===null) return 1;
@@ -3894,12 +3940,12 @@ async function generatePdfReportPart1(){
       <tbody>`;
   rows.forEach((r,i)=>{
     html += `<tr>
-      <td>${r.result.total!==null ? i+1 : '-'}</td>
-      <td>${escapeHtml(r.work.title)}</td>
+      <td style="text-align:center;">${r.result.total!==null ? i+1 : '-'}</td>
+      <td style="text-align:center;">${escapeHtml(r.work.title)}</td>
       <td>${escapeHtml(r.work.presenter||'-')}</td>
       <td>${escapeHtml(r.work.researchName||'-')}</td>
-      <td>${r.result.total!==null ? r.result.total.toFixed(2) : '-'}</td>
-      <td>${r.grade || '-'}</td>
+      <td style="text-align:center;">${r.result.total!==null ? r.result.total.toFixed(2) : '-'}</td>
+      <td style="text-align:center;">${r.grade || '-'}</td>
     </tr>`;
   });
   html += `</tbody></table>
@@ -4020,14 +4066,13 @@ async function renderSummaryTab(){
   ctxJudgeSignatures = await loadJudgeSignaturesFor(ctxGroupId);
   ctxCertifyApproved = await loadCertifyApprovedFor(ctxGroupId);
 
-  const rows = [];
-  for(const w of ctxWorks){
+  const rows = await Promise.all(ctxWorks.map(async w => {
     const scores = await loadAllScoresFor(w.id);
     const result = computeWorkResult(scores);
     const nationalTotal = computeNationalTotal(w, result);
     const grade = nationalGrade(nationalTotal);
-    rows.push({ work:w, scores, result, nationalTotal, grade });
-  }
+    return { work:w, scores, result, nationalTotal, grade };
+  }));
   rows.sort((a,b)=>{
     if(a.nationalTotal===null && b.nationalTotal===null) return 0;
     if(a.nationalTotal===null) return 1;
@@ -4069,12 +4114,12 @@ async function renderSummaryTab(){
   rows.forEach((r,i)=>{
     const res = r.result;
     let statusCell;
-    if(!res.allDone){
+    if(res.resolved){
+      statusCell = `<span class="badge badge-done">${res.allDone ? 'ครบและมีฐานนิยมทุกตัวบ่งชี้' : `สรุปผลได้แล้ว (${res.doneCount}/3 กรรมการ)`}</span>`;
+    } else if(!res.allDone){
       statusCell = `<span class="badge badge-pending">ให้คะแนนแล้ว ${res.doneCount}/3</span>`;
-    } else if(res.conflicts.length>0){
-      statusCell = `<span class="badge badge-conflict"><span class="warn-icon" style="margin-right:4px;">!</span>ไม่มีฐานนิยม ${res.conflicts.length} ตัวบ่งชี้ · ต้องหารือ</span>`;
     } else {
-      statusCell = `<span class="badge badge-done">ครบและมีฐานนิยมทุกตัวบ่งชี้</span>`;
+      statusCell = `<span class="badge badge-conflict"><span class="warn-icon" style="margin-right:4px;">!</span>ไม่มีฐานนิยม ${res.conflicts.length} ตัวบ่งชี้ · ต้องหารือ</span>`;
     }
     let gradeCell;
     if(r.grade === 'ไม่ผ่านเกณฑ์'){
@@ -4289,34 +4334,35 @@ async function renderSummaryTab(){
     const panel = document.getElementById(`detail-${openDetailWorkId}`);
     if(r && panel){
       const res = r.result;
-      if(!res.allDone){
-        panel.innerHTML = `<div style="color:var(--muted)">รอกรรมการให้คะแนนครบ 3 คนก่อนจึงจะสรุปฐานนิยมได้ (ขณะนี้ ${res.doneCount}/3)</div>`;
-      } else {
-        let dhtml = `<table class="score-detail-table" style="font-size:12px;"><thead><tr><th>ตัวบ่งชี้</th><th>${escapeHtml(judgeLabel(1))}</th><th>${escapeHtml(judgeLabel(2))}</th><th>${escapeHtml(judgeLabel(3))}</th><th>ฐานนิยม</th><th>คะแนน</th></tr></thead><tbody>`;
+      const dash = '<span style="color:var(--muted)">-</span>';
+      let dhtml = `<table class="score-detail-table" style="font-size:12px;"><thead><tr><th>ตัวบ่งชี้</th><th>${escapeHtml(judgeLabel(1))}</th><th>${escapeHtml(judgeLabel(2))}</th><th>${escapeHtml(judgeLabel(3))}</th><th>ฐานนิยม</th><th>คะแนน</th></tr></thead><tbody>`;
         RUBRIC.forEach(dim=>{
           const dimIndicators = res.indicators.filter(ind=>ind.dimName===dim.name);
           dimIndicators.forEach(ind=>{
-            const conflict = ind.mode===null;
-            dhtml += `<tr style="${conflict?'background:var(--red-bg)':''}">
-              <td>${conflict ? '<span class="warn-icon" title="ยังไม่มีฐานนิยม">!</span>' : ''}${ind.id} ${escapeHtml(ind.name)}</td>
-              <td style="text-align:center">${ind.judgeLevels[0]}</td>
-              <td style="text-align:center">${ind.judgeLevels[1]}</td>
-              <td style="text-align:center">${ind.judgeLevels[2]}</td>
-              <td style="text-align:center">${conflict ? '<span style="color:var(--red);font-weight:600">ไม่มี</span>' : ind.mode}</td>
-              <td style="text-align:center">–</td>
+            dhtml += `<tr style="${ind.conflict?'background:var(--red-bg)':''}">
+              <td>${ind.conflict ? '<span class="warn-icon" title="ยังไม่มีฐานนิยม">!</span>' : ''}${ind.id} ${escapeHtml(ind.name)}</td>
+              <td style="text-align:center">${ind.judgeLevels[0]!=null ? ind.judgeLevels[0] : dash}</td>
+              <td style="text-align:center">${ind.judgeLevels[1]!=null ? ind.judgeLevels[1] : dash}</td>
+              <td style="text-align:center">${ind.judgeLevels[2]!=null ? ind.judgeLevels[2] : dash}</td>
+              <td style="text-align:center">${ind.mode!==null ? ind.mode : (ind.conflict ? '<span style="color:var(--red);font-weight:600">ไม่มี</span>' : '<span style="color:var(--muted)">รอ</span>')}</td>
+              <td style="text-align:center">${ind.score!==null ? ind.score : (ind.conflict ? '<span style="color:var(--red)">ต้องหารือ</span>' : '<span style="color:var(--muted)">รอ</span>')}</td>
             </tr>`;
           });
           const dimConflict = dimIndicators.some(ind=>ind.score===null);
           const dimTotal = dimConflict ? null : dimIndicators.reduce((s,ind)=>s+ind.score,0);
           dhtml += `<tr style="background:var(--card-alt,#F7F7F9);">
             <td colspan="5" style="text-align:right;"><strong>รวม${escapeHtml(dim.name)}</strong></td>
-            <td style="text-align:center"><strong>${dimConflict ? '<span style="color:var(--red)">ต้องหารือ</span>' : dimTotal.toFixed(2)}</strong></td>
+            <td style="text-align:center"><strong>${dimConflict ? '<span style="color:var(--muted)">รอ</span>' : dimTotal.toFixed(2)}</strong></td>
           </tr>`;
         });
         dhtml += `</tbody></table>`;
-        dhtml += `<div class="detail-row" style="margin-top:8px;"><span>คะแนนรวม</span><span>${res.total!==null ? res.total.toFixed(2)+' / '+MAX_SCORE.toFixed(2) : 'รอกรรมการปรับคะแนนตัวบ่งชี้ที่ไม่มีฐานนิยม'}</span></div>`;
+        if(!res.resolved && !res.allDone){
+          dhtml += `<div style="margin-top:8px;color:var(--muted);font-size:12px;">ให้คะแนนแล้ว ${res.doneCount}/3 คน — ตัวบ่งชี้ที่กรรมการยังให้คะแนนไม่ตรงกันจะรอฐานนิยมเมื่อกรรมการที่เหลือให้คะแนน</div>`;
+        } else if(res.resolved && !res.allDone){
+          dhtml += `<div style="margin-top:8px;color:var(--green);font-size:12px;">สรุปผลได้แล้วจากกรรมการ ${res.doneCount}/3 คน (มีฐานนิยมตรงกันทุกตัวบ่งชี้)</div>`;
+        }
+        dhtml += `<div class="detail-row" style="margin-top:8px;"><span>คะแนนรวม</span><span>${res.total!==null ? res.total.toFixed(2)+' / '+MAX_SCORE.toFixed(2) : (res.conflicts.length>0 ? 'รอกรรมการปรับคะแนนตัวบ่งชี้ที่ไม่มีฐานนิยม' : `รอกรรมการ (${res.doneCount}/3)`)}</span></div>`;
         panel.innerHTML = dhtml;
-      }
     }
   }
 }

@@ -307,14 +307,27 @@ async function renderAdminPanel(){
     if(!wantRegional && !wantNational){ toast.style.color='var(--red)'; toast.textContent='กรุณาเลือกอย่างน้อย 1 ระบบที่ให้สิทธิ์เข้าถึง'; return; }
     btn.disabled = true; btn.textContent = 'กำลังเพิ่ม...';
     let secondaryApp = null;
+    let accountAlreadyExisted = false;
     try{
       secondaryApp = firebase.initializeApp(firebaseConfig, 'adminCreate_' + Date.now());
-      await secondaryApp.auth().createUserWithEmailAndPassword(email, pass);
-      await secondaryApp.auth().signOut();
+      try{
+        await secondaryApp.auth().createUserWithEmailAndPassword(email, pass);
+        await secondaryApp.auth().signOut();
+      }catch(createErr){
+        if(createErr && createErr.code === 'auth/email-already-in-use'){
+          // บัญชีนี้มี Firebase Auth อยู่แล้ว (เช่น สร้างไว้จากระบบภูมิภาค/ประเทศเดิม) —
+          // ไม่ต้องสร้างซ้ำ แค่บันทึกสิทธิ์ landing permissions ให้ต่อได้เลย
+          accountAlreadyExisted = true;
+        } else {
+          throw createErr;
+        }
+      }
       permissions[email.toLowerCase()] = { regional: wantRegional, national: wantNational };
       await saveLandingPermissions(permissions);
       toast.style.color = 'var(--green)';
-      toast.textContent = `เพิ่มผู้ดูแลระบบ ${email} สำเร็จแล้ว แจ้งรหัสผ่านนี้ให้ผู้ใช้ไปเปลี่ยนเองภายหลัง`;
+      toast.textContent = accountAlreadyExisted
+        ? `บันทึกสิทธิ์ให้ ${email} แล้ว (ใช้บัญชีเดิมที่มีอยู่แล้ว ไม่ได้สร้างรหัสผ่านใหม่)`
+        : `เพิ่มผู้ดูแลระบบ ${email} สำเร็จแล้ว แจ้งรหัสผ่านนี้ให้ผู้ใช้ไปเปลี่ยนเองภายหลัง`;
       document.getElementById('newEmail').value='';
       document.getElementById('newPass').value='';
       document.getElementById('permRegional').checked=false;
@@ -322,8 +335,7 @@ async function renderAdminPanel(){
       renderAdminList();
     }catch(err){
       toast.style.color = 'var(--red)';
-      if(err && err.code==='auth/email-already-in-use') toast.textContent = 'อีเมลนี้มีบัญชีอยู่แล้ว (ถ้าต้องการแก้สิทธิ์ ดูในรายชื่อด้านล่าง)';
-      else toast.textContent = 'เพิ่มผู้ดูแลระบบไม่สำเร็จ กรุณาลองใหม่';
+      toast.textContent = 'เพิ่มผู้ดูแลระบบไม่สำเร็จ กรุณาลองใหม่';
     }
     if(secondaryApp){ try{ await secondaryApp.delete(); }catch(e){} }
     btn.disabled = false; btn.textContent = 'เพิ่มผู้ดูแลระบบ';

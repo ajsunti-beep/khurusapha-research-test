@@ -790,6 +790,7 @@ let ctxJudgeNames = { 1:'', 2:'', 3:'' };
 let ctxJudgePins = { 1:'', 2:'', 3:'' };
 let ctxJudgeSignatures = { 1:null, 2:null, 3:null };
 let ctxCertifyApproved = false;
+let ctxConsentNational = false;
 let ctxWorks = [];
 
 let currentTab = 'score';
@@ -1531,6 +1532,15 @@ async function loadCertifyApprovedFor(groupId){
 async function saveCertifyApprovedFor(groupId, val){
   await storage.set(`regional:certifyApproved:${groupId}`, JSON.stringify(!!val), true);
 }
+async function loadConsentNationalFor(groupId){
+  try{
+    const r = await storage.get(`regional:consentNational:${groupId}`, true);
+    return r ? JSON.parse(r.value) === true : false;
+  }catch(e){ return false; }
+}
+async function saveConsentNationalFor(groupId, val){
+  await storage.set(`regional:consentNational:${groupId}`, JSON.stringify(!!val), true);
+}
 async function loadWorksFor(groupId){
   try{
     const r = await storage.get(`regional:works:${groupId}`, true);
@@ -1775,13 +1785,14 @@ function nationalGrade(score){
 async function enterGroup(groupId, groupName){
   ctxGroupId = groupId;
   ctxGroupName = groupName;
-  [ctxJudgeNames, ctxJudgePins, ctxJudgeSignatures, ctxCertifyApproved, ctxWorks, ctxGroupDocLink] = await Promise.all([
+  [ctxJudgeNames, ctxJudgePins, ctxJudgeSignatures, ctxCertifyApproved, ctxWorks, ctxGroupDocLink, ctxConsentNational] = await Promise.all([
     loadJudgeNamesFor(groupId),
     loadJudgePinsFor(groupId),
     loadJudgeSignaturesFor(groupId),
     loadCertifyApprovedFor(groupId),
     loadWorksFor(groupId),
-    loadGroupDocLinkFor(groupId)
+    loadGroupDocLinkFor(groupId),
+    loadConsentNationalFor(groupId)
   ]);
   scoreWorkId = null;
   scoreLevels = {};
@@ -4194,6 +4205,7 @@ async function renderSummaryTab(){
 
   ctxJudgeSignatures = await loadJudgeSignaturesFor(ctxGroupId);
   ctxCertifyApproved = await loadCertifyApprovedFor(ctxGroupId);
+  ctxConsentNational = await loadConsentNationalFor(ctxGroupId);
 
   const rows = await Promise.all(ctxWorks.map(async w => {
     const scores = await loadAllScoresFor(w.id);
@@ -4285,7 +4297,34 @@ async function renderSummaryTab(){
     }
   });
   html += `</tbody></table></div></div>` + signCard;
+
+  if(!ej){
+    const signedCount = JUDGES.filter(n=>ctxJudgeSignatures[n]).length;
+    const eligibleForNational = signedCount >= 2;
+    html += `<div class="card">
+      <h2>ส่งผลงานเข้าสู่การพิจารณาระดับประเทศ</h2>
+      ${!eligibleForNational
+        ? `<p style="font-size:12.5px;color:var(--muted);margin:0;">ต้องมีกรรมการลงลายมือชื่อรับรองผลอย่างน้อย 2 ใน 3 คนก่อน จึงจะยินยอมส่งได้ (ตอนนี้รับรองแล้ว ${signedCount}/3)</p>`
+        : `
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+          <button class="btn ${ctxConsentNational ? 'btn-outline' : 'btn-gold'}" id="toggleConsentNationalBtn">${ctxConsentNational ? 'ยกเลิกความยินยอม' : 'ยินยอมส่งเข้าสู่การพิจารณาระดับประเทศ'}</button>
+          ${ctxConsentNational
+            ? `<span class="badge badge-done">ยินยอมแล้ว — ผลงานที่มีคะแนน ≥ 40 ในกลุ่มนี้จะปรากฏให้ระดับประเทศดึงไปได้</span>`
+            : `<span class="badge badge-pending">ยังไม่ยินยอม</span>`}
+        </div>`}
+    </div>`;
+  }
   body.innerHTML = html;
+
+  const toggleConsentBtn = document.getElementById('toggleConsentNationalBtn');
+  if(toggleConsentBtn){
+    toggleConsentBtn.onclick = async ()=>{
+      toggleConsentBtn.disabled = true;
+      ctxConsentNational = !ctxConsentNational;
+      await saveConsentNationalFor(ctxGroupId, ctxConsentNational);
+      renderSummaryTab();
+    };
+  }
 
   const pdfBtn1 = document.getElementById('pdfReportBtn1');
   if(pdfBtn1) pdfBtn1.onclick = generatePdfReportPart1;

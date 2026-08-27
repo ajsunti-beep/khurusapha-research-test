@@ -164,10 +164,49 @@ async function loadLandingPermissions(){
 }
 async function saveLandingPermissions(obj){ await kvSet('landing:permissions', JSON.stringify(obj)); }
 
+async function loadLandingUsernameMap(){
+  try{ const r = await kvGet('landing:usernameMap'); return r ? JSON.parse(r.value) : {}; }
+  catch(e){ return {}; }
+}
+async function saveLandingUsernameMap(obj){ await kvSet('landing:usernameMap', JSON.stringify(obj)); }
+
 /* ===================== state ===================== */
 let superAdmins = [];
 let permissions = {};
+let usernameMap = {}; // username(lowercase) -> email, for login-by-username and friendly display
 let currentUser = null;
+
+function cleanInput(s){
+  return (s==null ? '' : s).normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+}
+/* If someone mixes up the "email" and "username" boxes (a common slip — e.g. typing
+   the email into the username field and vice versa), this detects it from the "@"
+   and swaps them back automatically instead of just failing with a validation error. */
+function autoFixEmailUsername(email, username){
+  const emailHasAt = email.includes('@');
+  const usernameHasAt = username.includes('@');
+  if(!emailHasAt && usernameHasAt){
+    return { email: username, username: email, swapped: true };
+  }
+  return { email, username, swapped: false };
+}
+/* Accepts either a username or a raw email at login. Returns the real email to
+   authenticate with, or null if a username was given but not found. */
+function resolveLoginEmail(input){
+  const v = (input||'').trim();
+  if(!v) return null;
+  if(v.includes('@')) return v;
+  const hit = usernameMap[v.toLowerCase()];
+  return hit || null;
+}
+function usernameForEmail(email){
+  if(!email) return null;
+  const found = Object.entries(usernameMap).find(([u,e])=> e.toLowerCase()===email.toLowerCase());
+  return found ? found[0] : null;
+}
+function displayNameForEmail(email){
+  return usernameForEmail(email) || email;
+}
 
 function isSuperAdmin(email){
   if(!email) return false;
@@ -192,8 +231,8 @@ function renderLogin(){
   root.innerHTML = `
     <div class="card login-card">
       <h2>เข้าสู่ระบบ</h2>
-      <label>อีเมล</label>
-      <input type="email" id="loginEmail" placeholder="name@example.com">
+      <label>ชื่อผู้ใช้ หรือ อีเมล</label>
+      <input type="text" id="loginEmail" placeholder="ชื่อผู้ใช้ หรือ name@example.com">
       <label>รหัสผ่าน</label>
       <div class="pass-wrap">
         <input type="password" id="loginPass" placeholder="รหัสผ่าน">
@@ -211,12 +250,23 @@ function renderLogin(){
     toggleLoginPass.textContent = showing ? 'แสดง' : 'ซ่อน';
   };
   document.getElementById('loginBtn').onclick = async ()=>{
-    const email = document.getElementById('loginEmail').value.trim();
+    const rawInput = document.getElementById('loginEmail').value.trim();
     const pass = document.getElementById('loginPass').value;
     const errEl = document.getElementById('loginErr');
     errEl.style.display = 'none';
-    if(!email || !pass){
-      errEl.textContent = 'กรุณากรอกอีเมลและรหัสผ่าน';
+    if(!rawInput || !pass){
+      errEl.textContent = 'กรุณากรอกชื่อผู้ใช้/อีเมล และรหัสผ่าน';
+      errEl.style.display = 'block';
+      return;
+    }
+    // ต้องโหลด usernameMap ให้พร้อมก่อนแปลงชื่อผู้ใช้เป็นอีเมล (หน้า login แสดงก่อน auth
+    // state จะรู้ผล จึงยังไม่เคยโหลดค่านี้มาก่อนหน้านี้)
+    if(Object.keys(usernameMap).length===0){
+      try{ usernameMap = await loadLandingUsernameMap(); }catch(e){}
+    }
+    const email = resolveLoginEmail(rawInput);
+    if(!email){
+      errEl.textContent = 'ไม่พบชื่อผู้ใช้นี้ในระบบ กรุณาตรวจสอบอีกครั้ง หรือลองใช้อีเมลแทน';
       errEl.style.display = 'block';
       return;
     }
@@ -226,7 +276,7 @@ function renderLogin(){
       await fsAuth.signInWithEmailAndPassword(email, pass);
       // onAuthStateChanged จะจัดการ render ต่อเอง
     }catch(err){
-      errEl.textContent = 'เข้าสู่ระบบไม่สำเร็จ กรุณาตรวจสอบอีเมลและรหัสผ่าน';
+      errEl.textContent = 'เข้าสู่ระบบไม่สำเร็จ กรุณาตรวจสอบชื่อผู้ใช้/อีเมลและรหัสผ่าน';
       errEl.style.display = 'block';
       btn.disabled = false; btn.textContent = 'เข้าสู่ระบบ';
     }
@@ -236,7 +286,7 @@ function renderLogin(){
 /* ===================== render: card menu ===================== */
 function renderMenu(){
   topbar.style.display = 'flex';
-  whoSpan.textContent = 'ผู้ใช้: ' + currentUser.email;
+  whoSpan.textContent = 'ผู้ใช้: ' + displayNameForEmail(currentUser.email);
 
   const myPerm = permissions[currentUser.email.toLowerCase()] || { regional:false, national:false };
   const amSuper = isSuperAdmin(currentUser.email);
@@ -286,6 +336,8 @@ async function renderAdminPanel(){
     <a class="back-link" id="backLink">← กลับ</a>
     <div class="card">
       <div class="section-title" style="margin-top:0;">เพิ่มผู้ดูแลระบบใหม่</div>
+      <label>ชื่อผู้ใช้ (สำหรับแสดงผลและใช้ล็อกอินแทนอีเมลได้)</label>
+      <input type="text" id="newUsername" placeholder="เช่น preecha">
       <label>อีเมล (ใช้สำหรับล็อกอิน)</label>
       <input type="email" id="newEmail" placeholder="name@example.com">
       <label>รหัสผ่านชั่วคราว</label>
@@ -326,15 +378,19 @@ async function renderAdminPanel(){
   renderSuperList();
 
   document.getElementById('addAdminBtn').onclick = async ()=>{
-    const email = document.getElementById('newEmail').value.trim();
+    let username = cleanInput(document.getElementById('newUsername').value);
+    let email = cleanInput(document.getElementById('newEmail').value);
     const pass = document.getElementById('newPass').value;
     const wantRegional = document.getElementById('permRegional').checked;
     const wantNational = document.getElementById('permNational').checked;
     const toast = document.getElementById('addAdminToast');
     const btn = document.getElementById('addAdminBtn');
-    if(!email || !pass){ toast.style.color='var(--red)'; toast.textContent='กรุณากรอกอีเมลและรหัสผ่าน'; return; }
+    if(!username || !email || !pass){ toast.style.color='var(--red)'; toast.textContent='กรุณากรอกชื่อผู้ใช้ อีเมล และรหัสผ่านให้ครบ'; return; }
+    const fixedAdmin = autoFixEmailUsername(email, username);
+    email = fixedAdmin.email; username = fixedAdmin.username;
     if(pass.length<6){ toast.style.color='var(--red)'; toast.textContent='รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร'; return; }
     if(!wantRegional && !wantNational){ toast.style.color='var(--red)'; toast.textContent='กรุณาเลือกอย่างน้อย 1 ระบบที่ให้สิทธิ์เข้าถึง'; return; }
+    if(usernameMap[username.toLowerCase()]){ toast.style.color='var(--red)'; toast.textContent='มีชื่อผู้ใช้นี้อยู่แล้ว กรุณาตั้งชื่ออื่น'; return; }
     btn.disabled = true; btn.textContent = 'กำลังเพิ่ม...';
     let secondaryApp = null;
     let accountAlreadyExisted = false;
@@ -352,12 +408,15 @@ async function renderAdminPanel(){
           throw createErr;
         }
       }
+      usernameMap[username.toLowerCase()] = email;
+      await saveLandingUsernameMap(usernameMap);
       permissions[email.toLowerCase()] = { regional: wantRegional, national: wantNational };
       await saveLandingPermissions(permissions);
       toast.style.color = 'var(--green)';
       toast.textContent = accountAlreadyExisted
-        ? `บันทึกสิทธิ์ให้ ${email} แล้ว (ใช้บัญชีเดิมที่มีอยู่แล้ว ไม่ได้สร้างรหัสผ่านใหม่)`
-        : `เพิ่มผู้ดูแลระบบ ${email} สำเร็จแล้ว แจ้งรหัสผ่านนี้ให้ผู้ใช้ไปเปลี่ยนเองภายหลัง`;
+        ? `บันทึกสิทธิ์ให้ ${username} แล้ว (ใช้บัญชีเดิมที่มีอยู่แล้ว ไม่ได้สร้างรหัสผ่านใหม่)`
+        : `เพิ่มผู้ดูแลระบบ ${username} สำเร็จแล้ว แจ้งรหัสผ่านนี้ให้ผู้ใช้ไปเปลี่ยนเองภายหลัง`;
+      document.getElementById('newUsername').value='';
       document.getElementById('newEmail').value='';
       document.getElementById('newPass').value='';
       document.getElementById('permRegional').checked=false;
@@ -399,10 +458,19 @@ function renderAdminList(){
 
   el.innerHTML = emails.map(email=>{
     const p = permissions[email];
+    const uname = usernameForEmail(email);
     return `
-      <div class="admin-row">
+      <div class="admin-row" data-row-email="${email}">
         <div>
-          <div>${email}</div>
+          <div data-role="display">${uname || email}</div>
+          ${uname ? `<div style="font-size:12px;color:var(--muted);">${email}</div>` : ''}
+          <div class="username-edit" data-role="edit" style="display:none;margin-top:8px;">
+            <input type="text" class="uname-input" data-email="${email}" placeholder="ตั้งชื่อผู้ใช้" value="${uname||''}" style="margin-bottom:6px;">
+            <button class="btn btn-outline btn-uname-save" data-email="${email}" style="padding:4px 12px;font-size:13px;">บันทึกชื่อผู้ใช้</button>
+            <a class="back-link btn-uname-cancel" data-email="${email}" style="margin:0 0 0 10px;font-size:13px;">ยกเลิก</a>
+            <div class="toast" data-role="unameToast" style="margin-top:4px;"></div>
+          </div>
+          <a class="back-link btn-uname-toggle" data-email="${email}" style="margin:6px 0 0;font-size:12.5px;">${uname ? 'แก้ไขชื่อผู้ใช้' : '+ ตั้งชื่อผู้ใช้'}</a>
         </div>
         <div class="chk-group">
           <label><input type="checkbox" data-email="${email}" data-field="regional" ${p.regional?'checked':''}> ภูมิภาค</label>
@@ -411,6 +479,38 @@ function renderAdminList(){
         </div>
       </div>`;
   }).join('');
+
+  el.querySelectorAll('.btn-uname-toggle').forEach(a=>{
+    a.onclick = ()=>{
+      const row = el.querySelector(`.admin-row[data-row-email="${a.dataset.email}"]`);
+      row.querySelector('[data-role="display"]').style.display = 'none';
+      row.querySelector('[data-role="edit"]').style.display = 'block';
+      a.style.display = 'none';
+    };
+  });
+  el.querySelectorAll('.btn-uname-cancel').forEach(a=>{
+    a.onclick = ()=> renderAdminList();
+  });
+  el.querySelectorAll('.btn-uname-save').forEach(btn=>{
+    btn.onclick = async ()=>{
+      const email = btn.dataset.email;
+      const row = el.querySelector(`.admin-row[data-row-email="${email}"]`);
+      const input = row.querySelector('.uname-input');
+      const toast = row.querySelector('[data-role="unameToast"]');
+      const newUsername = cleanInput(input.value).toLowerCase();
+      const oldUsername = usernameForEmail(email);
+      toast.textContent = '';
+      if(!newUsername){ toast.style.color='var(--red)'; toast.textContent='กรุณากรอกชื่อผู้ใช้'; return; }
+      if(usernameMap[newUsername] && usernameMap[newUsername].toLowerCase()!==email.toLowerCase()){
+        toast.style.color='var(--red)'; toast.textContent='มีชื่อผู้ใช้นี้อยู่แล้ว กรุณาตั้งชื่ออื่น'; return;
+      }
+      btn.disabled = true; btn.textContent = 'กำลังบันทึก...';
+      if(oldUsername) delete usernameMap[oldUsername.toLowerCase()];
+      usernameMap[newUsername] = email;
+      await saveLandingUsernameMap(usernameMap);
+      renderAdminList();
+    };
+  });
 
   function updateRowButton(email){
     const btn = el.querySelector(`button[data-saverow="${email}"]`);
@@ -447,7 +547,7 @@ function renderSuperList(){
   if(superAdmins.length===0){ el.innerHTML=''; return; }
   el.innerHTML = superAdmins.map(email=>`
     <div class="admin-row">
-      <div class="em">${email}</div>
+      <div class="em">${displayNameForEmail(email)}</div>
       <a class="back-link" style="margin:0;color:var(--red);" data-email="${email}">ถอดสิทธิ์</a>
     </div>`).join('');
   el.querySelectorAll('a[data-email]').forEach(a=>{
@@ -469,7 +569,7 @@ fsAuth.onAuthStateChanged(async (user)=>{
   }
   currentUser = user;
   root.innerHTML = '<div class="card" style="text-align:center;">กำลังโหลด...</div>';
-  [superAdmins, permissions] = await Promise.all([loadLandingSuperAdmins(), loadLandingPermissions()]);
+  [superAdmins, permissions, usernameMap] = await Promise.all([loadLandingSuperAdmins(), loadLandingPermissions(), loadLandingUsernameMap()]);
   renderMenu();
 });
 </script>

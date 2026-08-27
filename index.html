@@ -1302,17 +1302,37 @@ function readImageFileToDataURL(file, maxDim){
         ctx.fillStyle = '#fff';
         ctx.fillRect(0, 0, w, h);
         ctx.drawImage(img, 0, 0, w, h);
-        const qaInfo = cleanUpSignaturePhoto(canvas);
-        if(qaInfo.noContent){
-          reject(Object.assign(new Error('no signature content detected'), { code:'client/no-signature-detected' }));
-          return;
-        }
-        const cropped = cropCanvasToContent(canvas, 6);
-        resolve({ dataUrl: cropped.toDataURL('image/png'), qaInfo });
+        resolve(canvas.toDataURL('image/png'));
       };
       img.src = reader.result;
     };
     reader.readAsDataURL(file);
+  });
+}
+/* On-demand (checkbox-triggered) background removal + tight crop for an
+   uploaded signature photo, reusing the same proven cleanUpSignaturePhoto
+   engine that used to run unconditionally on every upload. Operates on a
+   dataURL (not a live canvas) so it can be called lazily only when the user
+   opts in, after seeing the original photo first. */
+function removeBackgroundAndCropDataURL(dataUrl, padding){
+  padding = padding==null ? 6 : padding;
+  return new Promise((resolve, reject)=>{
+    const img = new Image();
+    img.onerror = ()=> reject(Object.assign(new Error('invalid image'), { code:'client/invalid-image' }));
+    img.onload = ()=>{
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const qaInfo = cleanUpSignaturePhoto(canvas);
+      if(qaInfo.noContent){
+        reject(Object.assign(new Error('no signature content detected'), { code:'client/no-signature-detected' }));
+        return;
+      }
+      const cropped = cropCanvasToContent(canvas, padding);
+      resolve({ dataUrl: cropped.toDataURL('image/png'), qaInfo });
+    };
+    img.src = dataUrl;
   });
 }
 /* Crops the signature canvas tightly around the drawn strokes so the exported
@@ -4208,32 +4228,73 @@ async function renderSummaryTab(){
           const dropZone = document.getElementById('sigDropZone');
           const previewWrap = document.getElementById('sigFilePreviewWrap');
           const toast = document.getElementById('sigToast');
+          let originalUploadDataUrl = null;
+          let processedUploadDataUrl = null; // computed lazily, only when the checkbox is turned on
+          let bgRemovalOn = false; // default: show the original attached image as-is
+          let bgProcessing = false;
+          const updatePreview = ()=>{
+            const src = (bgRemovalOn && processedUploadDataUrl) ? processedUploadDataUrl : originalUploadDataUrl;
+            uploadedDataUrl = src;
+            previewWrap.innerHTML = `
+              <div style="display:inline-block;max-width:100%;border-radius:6px;overflow:hidden;
+                background-image:linear-gradient(45deg,#ccc 25%,transparent 25%),linear-gradient(-45deg,#ccc 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#ccc 75%),linear-gradient(-45deg,transparent 75%,#ccc 75%);
+                background-size:16px 16px;background-position:0 0,0 8px,8px -8px,-8px 0px;">
+                <img src="${src}" alt="ลายเซ็นที่แนบ" style="max-width:100%;max-height:220px;display:block;margin:0 auto;">
+              </div>
+              ${originalUploadDataUrl ? `
+                <label id="sigBgToggleLabel" style="display:flex;align-items:center;gap:6px;justify-content:center;margin-top:8px;font-size:12.5px;color:var(--muted);cursor:${bgProcessing ? 'default' : 'pointer'};">
+                  <input type="checkbox" id="sigBgToggle" ${bgRemovalOn ? 'checked' : ''} ${bgProcessing ? 'disabled' : ''}>
+                  ${bgProcessing ? 'กำลังลบพื้นหลัง...' : 'ครอปตัดและลบพื้นหลังอัตโนมัติ'}
+                </label>
+              ` : ''}
+            `;
+            // ป้ายกำกับ/checkbox นี้อยู่ใน dropZone ซึ่งคลิกที่ไหนก็เปิดหน้าต่างเลือกไฟล์
+            // ถ้าไม่ stopPropagation คลิก checkbox จะไป trigger dropZone.onclick ด้วย
+            const bgToggleLabel = document.getElementById('sigBgToggleLabel');
+            if(bgToggleLabel) bgToggleLabel.onclick = (e)=> e.stopPropagation();
+            const bgToggle = document.getElementById('sigBgToggle');
+            if(bgToggle) bgToggle.onchange = async (e)=>{
+              bgRemovalOn = e.target.checked;
+              toast.style.color = '';
+              toast.textContent = '';
+              if(bgRemovalOn && !processedUploadDataUrl){
+                bgProcessing = true;
+                updatePreview();
+                try{
+                  const result = await removeBackgroundAndCropDataURL(originalUploadDataUrl);
+                  processedUploadDataUrl = result.dataUrl;
+                  const warnMsg = sigQaWarning(result.qaInfo);
+                  if(warnMsg){ toast.style.color = 'var(--orange)'; toast.textContent = `⚠ ${warnMsg}`; }
+                }catch(err){
+                  bgRemovalOn = false;
+                  toast.style.color = 'var(--red)';
+                  toast.textContent = (err && err.code==='client/no-signature-detected')
+                    ? 'ไม่พบเส้นลายเซ็นที่ชัดเจนในภาพนี้ กรุณาถ่ายรูปใหม่ให้เห็นลายเซ็นชัดขึ้นและมีแสงสม่ำเสมอ'
+                    : 'ไม่สามารถประมวลผลภาพนี้ได้ กรุณาลองไฟล์อื่น';
+                }
+                bgProcessing = false;
+              }
+              updatePreview();
+            };
+          };
           const handleFile = async (file)=>{
             toast.style.color = '';
             toast.textContent = '';
             if(!file) return;
             previewWrap.innerHTML = `<span style="color:var(--muted);font-size:13px;">กำลังโหลดรูป...</span>`;
             try{
-              const result = await readImageFileToDataURL(file, 500);
-              uploadedDataUrl = result.dataUrl;
-              const warnMsg = sigQaWarning(result.qaInfo);
-              // พื้นตารางหมากรุก (checkerboard) ให้เห็นความโปร่งใสจริง ไม่ใช่แค่บนพื้นขาว
-              // ซึ่งอาจกลืนไปกับเงา/noise จางๆ ที่หลงเหลืออยู่จนมองไม่เห็น
-              previewWrap.innerHTML = `
-                <div style="display:inline-block;max-width:100%;border-radius:6px;overflow:hidden;
-                  background-image:linear-gradient(45deg,#ccc 25%,transparent 25%),linear-gradient(-45deg,#ccc 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#ccc 75%),linear-gradient(-45deg,transparent 75%,#ccc 75%);
-                  background-size:16px 16px;background-position:0 0,0 8px,8px -8px,-8px 0px;">
-                  <img src="${uploadedDataUrl}" alt="ลายเซ็นที่แนบ" style="max-width:100%;max-height:220px;display:block;margin:0 auto;">
-                </div>
-                ${warnMsg ? `<p style="font-size:11.5px;color:var(--orange);margin:8px 0 0;text-align:center;">⚠ ${warnMsg}</p>` : ''}
-              `;
+              originalUploadDataUrl = await readImageFileToDataURL(file, 500);
+              processedUploadDataUrl = null;
+              bgRemovalOn = false;
+              updatePreview();
             }catch(err){
               uploadedDataUrl = null;
+              originalUploadDataUrl = null;
+              processedUploadDataUrl = null;
               previewWrap.innerHTML = `<span style="color:var(--muted);font-size:13px;">แตะเพื่อเลือกไฟล์ หรือลากรูปมาวางตรงนี้</span>`;
               toast.style.color = 'var(--red)';
               if(err && err.code==='client/invalid-file-type') toast.textContent = 'กรุณาเลือกไฟล์รูปภาพเท่านั้น (JPG, PNG)';
               else if(err && err.code==='client/file-too-large') toast.textContent = 'ไฟล์ใหญ่เกินไป กรุณาเลือกไฟล์ไม่เกิน 8MB';
-              else if(err && err.code==='client/no-signature-detected') toast.textContent = 'ไม่พบเส้นลายเซ็นที่ชัดเจนในภาพนี้ กรุณาถ่ายรูปใหม่ให้เห็นลายเซ็นชัดขึ้นและมีแสงสม่ำเสมอ';
               else toast.textContent = 'ไม่สามารถอ่านไฟล์รูปภาพนี้ได้ กรุณาลองไฟล์อื่น';
             }
           };

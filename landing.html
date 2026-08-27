@@ -127,17 +127,17 @@ input:focus{outline:2px solid var(--blue-2);outline-offset:1px;}
 
 <script>
 /* ===================== ปรับได้: ลิงก์ปลายทางของแต่ละระบบ ===================== */
-const REGIONAL_URL = "https://ajsunti-beep.github.io/khurusapha-research-test/";
-const NATIONAL_URL = "https://ajsunti-beep.github.io/test-scoring-app/";
+const REGIONAL_URL = "https://ksp-research-regional.netlify.app/";
+const NATIONAL_URL = "https://krusapa-oral-presentation.netlify.app/";
 
 /* ===================== Firebase (ksp-research-test) ===================== */
 const firebaseConfig = {
-  apiKey: "AIzaSyDAeDb-YgSJRzHdIdQcqjQXFNI1OMByEyY",
-  authDomain: "ksp-research-test.firebaseapp.com",
-  projectId: "ksp-research-test",
-  storageBucket: "ksp-research-test.firebasestorage.app",
-  messagingSenderId: "785664317330",
-  appId: "1:785664317330:web:527dac848e71620a08134b"
+  apiKey: "AIzaSyCRp_H0C3HI8XR6ZsTVEscAYeNY5Cbw8wQ",
+  authDomain: "ksp-research-prod.firebaseapp.com",
+  projectId: "ksp-research-prod",
+  storageBucket: "ksp-research-prod.firebasestorage.app",
+  messagingSenderId: "833631976426",
+  appId: "1:833631976426:web:afba9ac4b285a7c7b01093"
 };
 firebase.initializeApp(firebaseConfig);
 const fsDb = firebase.firestore();
@@ -208,6 +208,9 @@ function displayNameForEmail(email){
   return usernameForEmail(email) || email;
 }
 
+function escapeHtml(s){
+  return (s==null ? '' : String(s)).replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
 function isSuperAdmin(email){
   if(!email) return false;
   if(superAdmins.length===0) return true; // bootstrap: no superadmin set yet
@@ -365,6 +368,9 @@ async function renderAdminPanel(){
       <div class="toast" id="addSuperToast"></div>
       <div id="superList" style="margin-top:14px;"></div>
     </div>
+
+    <div class="section-title">ตรวจสอบข้อมูลเชื่อมโยง ภูมิภาค → ประเทศ</div>
+    <div class="card" id="linkageInspectionCard"><div class="toast">กำลังโหลด...</div></div>
   `;
   document.getElementById('backLink').onclick = renderMenu;
   const togglePass = document.getElementById('togglePass');
@@ -376,6 +382,7 @@ async function renderAdminPanel(){
   };
   renderAdminList();
   renderSuperList();
+  renderLinkageInspectionPanel();
 
   document.getElementById('addAdminBtn').onclick = async ()=>{
     let username = cleanInput(document.getElementById('newUsername').value);
@@ -556,6 +563,167 @@ function renderSuperList(){
       await saveLandingSuperAdmins(superAdmins);
       renderSuperList();
       renderAdminPanel();
+    };
+  });
+}
+
+/* ===================== ตรวจสอบข้อมูลเชื่อมโยง ภูมิภาค → ประเทศ =====================
+   อ่านทะเบียนกลาง link:regionalPullIndex (single source of truth ที่ตกลงกันไว้ตอนออกแบบ
+   ฟีเจอร์ดึงผลงาน) โดยตรงจาก client — ใช้ได้เพราะ Firestore rule เปิด read:true ทุกจุด */
+async function loadRegionalPullIndexForInspection(){
+  try{ const r = await kvGet('link:regionalPullIndex'); return r ? JSON.parse(r.value) : {}; }
+  catch(e){ return {}; }
+}
+async function saveRegionalPullIndexForInspection(idx){
+  await kvSet('link:regionalPullIndex', JSON.stringify(idx));
+}
+async function loadRegionalGroupsForInspection(){
+  try{ const r = await kvGet('regional:groups'); return r ? JSON.parse(r.value) : []; }
+  catch(e){ return []; }
+}
+
+let linkageEntriesCache = [];
+
+async function renderLinkageInspectionPanel(){
+  const card = document.getElementById('linkageInspectionCard');
+  card.innerHTML = `<div class="toast">กำลังโหลดข้อมูลเชื่อมโยง...</div>`;
+
+  const [pullIndex, regionalGroups] = await Promise.all([
+    loadRegionalPullIndexForInspection(),
+    loadRegionalGroupsForInspection()
+  ]);
+  const yearByRegionalGroupId = {};
+  regionalGroups.forEach(g=>{ yearByRegionalGroupId[g.id] = g.year || ''; });
+
+  linkageEntriesCache = Object.entries(pullIndex).map(([regionalWorkId, entry])=>({
+    regionalWorkId,
+    ...entry,
+    year: yearByRegionalGroupId[entry.regionalGroupId] || ''
+  }));
+
+  if(linkageEntriesCache.length===0){
+    card.innerHTML = `<div class="toast" style="color:var(--muted);">ยังไม่มีผลงานที่ถูกดึงจากภูมิภาคเข้าสู่ระดับประเทศ</div>`;
+    return;
+  }
+
+  const years = [...new Set(linkageEntriesCache.map(x=>x.year).filter(y=>y))].sort((a,b)=>b.localeCompare(a));
+  const regionalGroupNames = [...new Set(linkageEntriesCache.map(x=>x.regionalGroupName))].sort();
+  const nationalGroupNames = [...new Set(linkageEntriesCache.map(x=>x.nationalGroupName))].sort();
+
+  card.innerHTML = `
+    <div style="display:flex;gap:14px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:140px;">
+        <label>ปี</label>
+        <select id="linkYearFilter">
+          <option value="__all__">ทั้งหมด</option>
+          ${years.map(y=>`<option value="${escapeHtml(y)}">ปี ${escapeHtml(y)}</option>`).join('')}
+        </select>
+      </div>
+      <div style="flex:1;min-width:180px;">
+        <label>กลุ่มภูมิภาค</label>
+        <select id="linkRegionalGroupFilter">
+          <option value="__all__">ทั้งหมด</option>
+          ${regionalGroupNames.map(n=>`<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')}
+        </select>
+      </div>
+      <div style="flex:1;min-width:180px;">
+        <label>กลุ่มประเทศ</label>
+        <select id="linkNationalGroupFilter">
+          <option value="__all__">ทั้งหมด</option>
+          ${nationalGroupNames.map(n=>`<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <label>ค้นหารหัสผลงาน/ชื่อผู้วิจัย</label>
+    <input type="text" id="linkSearchInput" placeholder="พิมพ์เพื่อค้นหา...">
+    <div id="linkageListWrap" style="margin-top:14px;"></div>
+  `;
+  ['linkYearFilter','linkRegionalGroupFilter','linkNationalGroupFilter'].forEach(id=>{
+    document.getElementById(id).onchange = renderLinkageList;
+  });
+  document.getElementById('linkSearchInput').oninput = renderLinkageList;
+  renderLinkageList();
+}
+
+function renderLinkageList(){
+  const wrap = document.getElementById('linkageListWrap');
+  const yearF = document.getElementById('linkYearFilter').value;
+  const rGroupF = document.getElementById('linkRegionalGroupFilter').value;
+  const nGroupF = document.getElementById('linkNationalGroupFilter').value;
+  const search = document.getElementById('linkSearchInput').value.trim().toLowerCase();
+
+  const filtered = linkageEntriesCache.filter(x=>{
+    if(yearF!=='__all__' && x.year!==yearF) return false;
+    if(rGroupF!=='__all__' && x.regionalGroupName!==rGroupF) return false;
+    if(nGroupF!=='__all__' && x.nationalGroupName!==nGroupF) return false;
+    if(search){
+      const hay = `${x.workTitle} ${x.presenter}`.toLowerCase();
+      if(!hay.includes(search)) return false;
+    }
+    return true;
+  });
+
+  if(filtered.length===0){
+    wrap.innerHTML = `<div class="toast" style="color:var(--muted);">ไม่พบรายการที่ตรงกับตัวกรอง</div>`;
+    return;
+  }
+
+  wrap.innerHTML = `<p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">พบทั้งหมด ${filtered.length} รายการ</p>` +
+    filtered.map(x=>{
+      const dateStr = x.pulledAt ? new Date(x.pulledAt).toLocaleDateString('th-TH', { year:'numeric', month:'long', day:'numeric' }) : 'ไม่ทราบวันที่';
+      return `
+      <div class="admin-row" style="flex-direction:column;align-items:stretch;gap:8px;">
+        <div>
+          <strong>${escapeHtml(x.workTitle)}</strong> — ${escapeHtml(x.presenter||'-')}
+          <div style="font-size:12px;color:var(--muted);">
+            ต้นทาง: ${escapeHtml(x.regionalGroupName)}${x.year ? ' (ปี '+escapeHtml(x.year)+')' : ''}
+            &nbsp;→&nbsp; ปลายทาง: ${escapeHtml(x.nationalGroupName)}
+          </div>
+          <div style="font-size:12px;color:var(--muted);">
+            คะแนน ณ ตอนดึง ${x.regionalScoreAtPull!=null ? x.regionalScoreAtPull.toFixed(2) : '-'} /50
+            &nbsp;·&nbsp; ดึงเมื่อ ${dateStr}${x.pulledBy ? ' โดย '+escapeHtml(displayNameForEmail(x.pulledBy)) : ''}
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;">
+          <a class="back-link" style="margin:0;" href="${NATIONAL_URL}" target="_blank">ไปดูสถานะปัจจุบัน →</a>
+          <a class="back-link" style="margin:0;color:var(--red);" data-unlink="${x.regionalWorkId}">ยกเลิกการเชื่อมโยง</a>
+        </div>
+      </div>`;
+    }).join('');
+
+  wrap.querySelectorAll('a[data-unlink]').forEach(a=>{
+    let confirming = false;
+    let revertTimer = null;
+    a.onclick = async (e)=>{
+      e.preventDefault();
+      if(!confirming){
+        confirming = true;
+        a.textContent = 'ยืนยันการยกเลิก? (จะลบผลงานออกจากกลุ่มประเทศด้วย)';
+        revertTimer = setTimeout(()=>{ confirming = false; a.textContent = 'ยกเลิกการเชื่อมโยง'; }, 4000);
+        return;
+      }
+      clearTimeout(revertTimer);
+      a.textContent = 'กำลังยกเลิก...';
+      const regionalWorkId = a.dataset.unlink;
+      const entry = linkageEntriesCache.find(x=>x.regionalWorkId===regionalWorkId);
+      try{
+        // ลบผลงานออกจากกลุ่มประเทศปลายทางด้วย ไม่ใช่แค่ลบทะเบียน — กันไม่ให้ผลงาน
+        // ค้างอยู่ในกลุ่มประเทศทั้งที่ทะเบียนบอกว่ายกเลิกแล้ว (ตรงกับ self-healing ที่ออกแบบไว้)
+        if(entry){
+          const worksKey = `national:works:${entry.nationalGroupId}`;
+          const r = await kvGet(worksKey);
+          const works = r ? JSON.parse(r.value) : [];
+          const newWorks = works.filter(w=>w.pulledFromRegionalWorkId!==regionalWorkId);
+          await kvSet(worksKey, JSON.stringify(newWorks));
+        }
+        const idx = await loadRegionalPullIndexForInspection();
+        delete idx[regionalWorkId];
+        await saveRegionalPullIndexForInspection(idx);
+        await renderLinkageInspectionPanel();
+      }catch(err){
+        a.textContent = 'ยกเลิกไม่สำเร็จ กรุณาลองใหม่';
+        setTimeout(()=>{ a.textContent = 'ยกเลิกการเชื่อมโยง'; confirming = false; }, 2500);
+      }
     };
   });
 }
